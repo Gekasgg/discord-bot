@@ -12,63 +12,28 @@ class TicketModal(ui.Modal):
         modal_title = settings.get("ticket_modal_title") or "Создание нового обращения"
         super().__init__(title=modal_title[:45])
 
-        f1_label = settings.get("ticket_field1_label") or "1. Ваш никнейм"
-        f1_ph = settings.get("ticket_field1_placeholder") or "Укажите ваш никнейм в игре или на сервере"
+        field1_label = settings.get("ticket_field1_label") or "Тема обращения"
+        field1_ph = settings.get("ticket_field1_placeholder") or "Кратко укажите суть (например, вопрос, жалоба...)"
 
-        f2_label = settings.get("ticket_field2_label") or "2. Ваш ID / SteamID"
-        f2_ph = settings.get("ticket_field2_placeholder") or "Ваш SteamID или Discord ID (если применимо)"
+        field2_label = settings.get("ticket_field2_label") or "Описание вопроса или проблемы"
+        field2_ph = settings.get("ticket_field2_placeholder") or "Опишите подробно, с чем вам требуется помощь..."
 
-        f3_label = settings.get("ticket_field3_label") or "3. Тема обращения"
-        f3_ph = settings.get("ticket_field3_placeholder") or "Вопрос, жалоба, донат, баг..."
-
-        f4_label = settings.get("ticket_field4_label") or "4. Описание проблемы"
-        f4_ph = settings.get("ticket_field4_placeholder") or "Опишите подробно все детали вопроса или проблемы..."
-
-        f5_label = settings.get("ticket_field5_label") or "5. Доказательства / Ссылки"
-        f5_ph = settings.get("ticket_field5_placeholder") or "Ссылки на скриншоты или видео (необязательно)"
-
-        # 5 строк в модальном окне (максимум для Discord API)
-        self.field1 = ui.TextInput(
-            label=f1_label[:45],
-            placeholder=f1_ph[:100],
+        self.topic = ui.TextInput(
+            label=field1_label[:45],
+            placeholder=field1_ph[:100],
             required=True,
             max_length=100
         )
-        self.add_item(self.field1)
+        self.add_item(self.topic)
 
-        self.field2 = ui.TextInput(
-            label=f2_label[:45],
-            placeholder=f2_ph[:100],
-            required=False,
-            max_length=100
-        )
-        self.add_item(self.field2)
-
-        self.field3 = ui.TextInput(
-            label=f3_label[:45],
-            placeholder=f3_ph[:100],
-            required=True,
-            max_length=100
-        )
-        self.add_item(self.field3)
-
-        self.field4 = ui.TextInput(
-            label=f4_label[:45],
-            placeholder=f4_ph[:100],
+        self.details = ui.TextInput(
+            label=field2_label[:45],
+            placeholder=field2_ph[:100],
             style=discord.TextStyle.paragraph,
             required=True,
             max_length=1500
         )
-        self.add_item(self.field4)
-
-        self.field5 = ui.TextInput(
-            label=f5_label[:45],
-            placeholder=f5_ph[:100],
-            style=discord.TextStyle.short,
-            required=False,
-            max_length=500
-        )
-        self.add_item(self.field5)
+        self.add_item(self.details)
 
     async def on_submit(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
@@ -144,7 +109,7 @@ class TicketModal(ui.Modal):
                 name=ticket_name,
                 category=category,
                 overwrites=overwrites,
-                topic=f"Тикет #{num} | {interaction.user} | {self.field3.value[:50]}"
+                topic=f"Тикет #{num} | {interaction.user} | {self.topic.value[:50]}"
             )
         except discord.Forbidden:
             await interaction.followup.send(
@@ -176,7 +141,7 @@ class TicketModal(ui.Modal):
         except Exception:
             welcome_text = welcome_text_tpl
 
-        # Эмбед в созданный канал со всеми 5 строками
+        # Эмбед в созданный канал
         embed = discord.Embed(
             title=welcome_title,
             description=welcome_text,
@@ -184,14 +149,9 @@ class TicketModal(ui.Modal):
             timestamp=discord.utils.utcnow()
         )
         embed.set_author(name=str(interaction.user), icon_url=interaction.user.display_avatar.url)
-        embed.add_field(name="Автор", value=interaction.user.mention, inline=False)
-        embed.add_field(name=self.field1.label, value=self.field1.value or "—", inline=True)
-        if self.field2.value:
-            embed.add_field(name=self.field2.label, value=self.field2.value, inline=True)
-        embed.add_field(name=self.field3.label, value=self.field3.value or "—", inline=False)
-        embed.add_field(name=self.field4.label, value=self.field4.value or "—", inline=False)
-        if self.field5.value:
-            embed.add_field(name=self.field5.label, value=self.field5.value, inline=False)
+        embed.add_field(name="Автор", value=interaction.user.mention, inline=True)
+        embed.add_field(name=self.topic.label, value=self.topic.value, inline=False)
+        embed.add_field(name=self.details.label, value=self.details.value, inline=False)
         embed.set_footer(text="Используйте кнопки ниже для управления тикетом")
 
         mention_text = f"{interaction.user.mention}"

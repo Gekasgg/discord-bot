@@ -89,68 +89,66 @@ class EditPanelModal(ui.Modal, title="Настройка текста панел
             await interaction.followup.send(f"❌ Ошибка при изменении панели: {e}", ephemeral=True)
 
 
-class EditTicketFormModal(ui.Modal, title="Форма обращения (5 строк)"):
-    """Модальное окно для настройки названий 5 строк при создании тикета."""
+class EditTicketFormModal(ui.Modal, title="Форма создания обращения"):
+    """Модальное окно для настройки полей ввода при создании тикета."""
 
     def __init__(self, settings: dict):
         super().__init__()
+        self.modal_title_input = ui.TextInput(
+            label="Заголовок всплывающего окна (до 45)",
+            default=(settings.get("ticket_modal_title") or "Создание нового обращения")[:45],
+            required=True,
+            max_length=45
+        )
+        self.add_item(self.modal_title_input)
+
         self.f1_label = ui.TextInput(
-            label="Строка 1 (до 45 симв.)",
-            default=(settings.get("ticket_field1_label") or "1. Ваш никнейм")[:45],
+            label="Название 1-го поля (до 45)",
+            default=(settings.get("ticket_field1_label") or "Тема обращения")[:45],
             required=True,
             max_length=45
         )
         self.add_item(self.f1_label)
 
+        self.f1_ph = ui.TextInput(
+            label="Подсказка внутри 1-го поля",
+            default=(settings.get("ticket_field1_placeholder") or "Кратко укажите суть (например, вопрос, жалоба...)")[:100],
+            required=False,
+            max_length=100
+        )
+        self.add_item(self.f1_ph)
+
         self.f2_label = ui.TextInput(
-            label="Строка 2 (до 45 симв.)",
-            default=(settings.get("ticket_field2_label") or "2. Ваш ID / SteamID")[:45],
+            label="Название 2-го поля (до 45)",
+            default=(settings.get("ticket_field2_label") or "Описание вопроса или проблемы")[:45],
             required=True,
             max_length=45
         )
         self.add_item(self.f2_label)
 
-        self.f3_label = ui.TextInput(
-            label="Строка 3 (до 45 симв.)",
-            default=(settings.get("ticket_field3_label") or "3. Тема обращения")[:45],
-            required=True,
-            max_length=45
+        self.f2_ph = ui.TextInput(
+            label="Подсказка внутри 2-го поля",
+            default=(settings.get("ticket_field2_placeholder") or "Опишите подробно, с чем вам требуется помощь...")[:100],
+            required=False,
+            max_length=100
         )
-        self.add_item(self.f3_label)
-
-        self.f4_label = ui.TextInput(
-            label="Строка 4 (до 45 симв.)",
-            default=(settings.get("ticket_field4_label") or "4. Описание проблемы")[:45],
-            required=True,
-            max_length=45
-        )
-        self.add_item(self.f4_label)
-
-        self.f5_label = ui.TextInput(
-            label="Строка 5 (до 45 симв.)",
-            default=(settings.get("ticket_field5_label") or "5. Доказательства / Ссылки")[:45],
-            required=True,
-            max_length=45
-        )
-        self.add_item(self.f5_label)
+        self.add_item(self.f2_ph)
 
     async def on_submit(self, interaction: discord.Interaction):
         guild_id = interaction.guild_id
+        config_manager.set_guild_value(guild_id, "ticket_modal_title", self.modal_title_input.value.strip())
         config_manager.set_guild_value(guild_id, "ticket_field1_label", self.f1_label.value.strip())
+        config_manager.set_guild_value(guild_id, "ticket_field1_placeholder", self.f1_ph.value.strip())
         config_manager.set_guild_value(guild_id, "ticket_field2_label", self.f2_label.value.strip())
-        config_manager.set_guild_value(guild_id, "ticket_field3_label", self.f3_label.value.strip())
-        config_manager.set_guild_value(guild_id, "ticket_field4_label", self.f4_label.value.strip())
-        config_manager.set_guild_value(guild_id, "ticket_field5_label", self.f5_label.value.strip())
+        config_manager.set_guild_value(guild_id, "ticket_field2_placeholder", self.f2_ph.value.strip())
 
         embed = discord.Embed(
-            title="✅ Названия 5 строк тикета обновлены!",
+            title="✅ Окно создания тикета обновлено!",
             description=(
-                f"1️⃣ **Строка 1:** `{self.f1_label.value}`\n"
-                f"2️⃣ **Строка 2:** `{self.f2_label.value}`\n"
-                f"3️⃣ **Строка 3:** `{self.f3_label.value}`\n"
-                f"4️⃣ **Строка 4:** `{self.f4_label.value}`\n"
-                f"5️⃣ **Строка 5:** `{self.f5_label.value}`\n\n"
-                "Теперь при нажатии на кнопку создания обращения пользователи увидят ровно эти 5 строк."
+                f"**Заголовок окна:** `{self.modal_title_input.value}`\n"
+                f"**Поле 1:** `{self.f1_label.value}` (подсказка: *{self.f1_ph.value or 'нет'}*)\n"
+                f"**Поле 2:** `{self.f2_label.value}` (подсказка: *{self.f2_ph.value or 'нет'}*)\n\n"
+                "Теперь при нажатии на кнопку создания обращения пользователи будут видеть эти поля."
             ),
             color=discord.Color.green()
         )

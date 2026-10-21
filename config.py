@@ -24,18 +24,12 @@ DEFAULT_GUILD_SETTINGS = {
     "support_role_id": None,
     "ticket_counter": 0,
     "active_tickets": {},  # channel_id: {"author_id": ..., "created_at": ..., "claimed_by": ...}
-    # Настройки формы создания обращения (5 строк)
+    # Настройки формы создания обращения
     "ticket_modal_title": "Создание нового обращения",
-    "ticket_field1_label": "1. Ваш никнейм",
-    "ticket_field1_placeholder": "Укажите ваш игровой или серверный никнейм",
-    "ticket_field2_label": "2. Ваш ID / SteamID",
-    "ticket_field2_placeholder": "Ваш SteamID или ID аккаунта (если применимо)",
-    "ticket_field3_label": "3. Тема обращения",
-    "ticket_field3_placeholder": "Вопрос, жалоба, донат, баг...",
-    "ticket_field4_label": "4. Описание проблемы",
-    "ticket_field4_placeholder": "Опишите подробно все детали вопроса или проблемы...",
-    "ticket_field5_label": "5. Доказательства / Ссылки",
-    "ticket_field5_placeholder": "Ссылки на скриншоты или видео (необязательно)",
+    "ticket_field1_label": "Тема обращения",
+    "ticket_field1_placeholder": "Кратко укажите суть (например, вопрос, жалоба...)",
+    "ticket_field2_label": "Описание вопроса или проблемы",
+    "ticket_field2_placeholder": "Опишите подробно, с чем вам требуется помощь...",
     # Настройки приветствия внутри тикета
     "ticket_welcome_title": "📩 Тикет #{num:04d}",
     "ticket_welcome_text": "Здравствуйте! Команда поддержки скоро ответит вам.\nПожалуйста, опишите все детали и ожидайте ответа.",
