@@ -372,6 +372,74 @@ class AdminCommands(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
+        name="test-log",
+        description="Проверить отправку логов в настроенный канал логов"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def test_log(self, interaction: discord.Interaction):
+        """Тестовая отправка лога для проверки канала и прав."""
+        guild = interaction.guild
+        settings = config_manager.get_guild(guild.id)
+        cid = settings.get("log_channel_id")
+        if not cid:
+            await interaction.response.send_message(
+                "❌ Канал логов не настроен! Используйте команду `/set-log-channel` чтобы назначить канал.",
+                ephemeral=True
+            )
+            return
+
+        channel = guild.get_channel(cid)
+        if not channel:
+            try:
+                channel = await self.bot.fetch_channel(cid)
+            except Exception:
+                channel = None
+
+        if not channel:
+            await interaction.response.send_message(
+                f"❌ Настроенный канал логов (ID: `{cid}`) не найден на сервере. Возможно, он был удален.",
+                ephemeral=True
+            )
+            return
+
+        perms = channel.permissions_for(guild.me)
+        if not perms.send_messages or not perms.embed_links:
+            await interaction.response.send_message(
+                f"⚠️ У бота нет необходимых прав в канале {channel.mention}:\n"
+                f"• Отправка сообщений (Send Messages): {'✅' if perms.send_messages else '❌'}\n"
+                f"• Прикрепление ссылок/эмбедов (Embed Links): {'✅' if perms.embed_links else '❌'}",
+                ephemeral=True
+            )
+            return
+
+        test_embed = discord.Embed(
+            title="🧪 Проверка системы логирования",
+            description=(
+                f"✅ **Канал логов работает исправно!**\n\n"
+                f"• **Канал:** {channel.mention}\n"
+                f"• **Сервер:** {guild.name}\n"
+                f"• **Инициатор проверки:** {interaction.user.mention}\n"
+                f"• **Намерения участников (Server Members Intent):** {'✅ Включены' if self.bot.intents.members else '❌ Выключены'}\n\n"
+                f"*Все системные события (вход/выход участников, роли, сообщения, войсы) отправляются в этот канал.*"
+            ),
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+        test_embed.set_footer(text="Тестовый лог системы аудита")
+
+        try:
+            await channel.send(embed=test_embed)
+            await interaction.response.send_message(
+                f"✅ Тестовый лог успешно отправлен в канал {channel.mention}!",
+                ephemeral=True
+            )
+        except Exception as e:
+            await interaction.response.send_message(
+                f"❌ Ошибка при отправке тестового лога в канал {channel.mention}: {e}",
+                ephemeral=True
+            )
+
+    @app_commands.command(
         name="set-autorole",
         description="Настроить роль, которая будет автоматически выдаваться новым участникам при входе"
     )
