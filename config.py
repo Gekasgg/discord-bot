@@ -36,7 +36,9 @@ DEFAULT_GUILD_SETTINGS = {
     # Настройки динамических голосовых каналов (Join to Create)
     "voice_hub_channel_id": None,
     "voice_category_id": None,
-    "temp_voice_channels": {}  # channel_id: {"owner_id": ..., "created_at": ...}
+    "temp_voice_channels": {},  # channel_id: {"owner_id": ..., "created_at": ...}
+    # Автовыдача роли при входе (Autorole)
+    "auto_role_id": None
 }
 
 

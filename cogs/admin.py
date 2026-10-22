@@ -372,6 +372,62 @@ class AdminCommands(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
+        name="set-autorole",
+        description="Настроить роль, которая будет автоматически выдаваться новым участникам при входе"
+    )
+    @app_commands.describe(
+        role="Роль для автоматической выдачи (оставьте пустым, чтобы отключить автовыдачу)"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def set_autorole(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role | None = None
+    ):
+        """Настройка или отключение авто-роли при входе."""
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        if role is None:
+            config_manager.set_guild_value(guild.id, "auto_role_id", None)
+            embed = discord.Embed(
+                title="🚫 Автовыдача роли отключена",
+                description="Новым участникам больше не будет автоматически выдаваться роль при входе.",
+                color=discord.Color.orange(),
+                timestamp=discord.utils.utcnow()
+            )
+            await interaction.response.send_message(embed=embed)
+            return
+
+        if role.is_default():
+            await interaction.response.send_message("❌ Нельзя назначить роль `@everyone` в качестве авто-роли.", ephemeral=True)
+            return
+
+        if role.managed:
+            await interaction.response.send_message("❌ Эта роль управляется интеграцией или ботом и не может выдаваться вручную.", ephemeral=True)
+            return
+
+        warning_text = ""
+        if guild.me.top_role <= role:
+            warning_text = (
+                f"\n\n⚠️ **Обратите внимание:** Роль {role.mention} находится на том же уровне или выше высшей роли бота (`{guild.me.top_role.name}`).\n"
+                "Чтобы бот мог успешно выдавать её новым участникам, поднимите роль бота выше этой роли в **Настройки сервера ➔ Роли**."
+            )
+
+        config_manager.set_guild_value(guild.id, "auto_role_id", role.id)
+
+        embed = discord.Embed(
+            title="✅ Автовыдача роли настроена",
+            description=f"Каждый новый участник при заходе на сервер автоматически получит роль {role.mention}.{warning_text}",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.set_footer(text="Для отключения используйте /set-autorole без указания роли.")
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
         name="bot-status",
         description="Проверить текущие настройки бота на этом сервере"
     )
@@ -385,6 +441,7 @@ class AdminCommands(commands.Cog):
         ticket_cat = guild.get_channel(settings.get("ticket_category_id")) if settings.get("ticket_category_id") else None
         ticket_log = guild.get_channel(settings.get("ticket_log_channel_id")) if settings.get("ticket_log_channel_id") else None
         role = guild.get_role(settings.get("support_role_id")) if settings.get("support_role_id") else None
+        auto_role = guild.get_role(settings.get("auto_role_id")) if settings.get("auto_role_id") else None
 
         voice_hub = guild.get_channel(settings.get("voice_hub_channel_id")) if settings.get("voice_hub_channel_id") else None
 
@@ -394,6 +451,7 @@ class AdminCommands(commands.Cog):
             timestamp=discord.utils.utcnow()
         )
         embed.add_field(name="Канал логов аудита", value=log_ch.mention if log_ch else "❌ Не настроен (/set-log-channel)", inline=False)
+        embed.add_field(name="Автовыдача роли (Autorole)", value=auto_role.mention if auto_role else "❌ Отключена (/set-autorole)", inline=True)
         embed.add_field(name="Категория тикетов", value=ticket_cat.name if ticket_cat else "❌ Не настроена (/setup-tickets)", inline=True)
         embed.add_field(name="Роль поддержки", value=role.mention if role else "Не указана", inline=True)
         embed.add_field(name="Канал логов тикетов", value=ticket_log.mention if ticket_log else "По умолчанию (канал логов)", inline=True)
@@ -411,8 +469,15 @@ class AdminCommands(commands.Cog):
         """Информационная справка."""
         embed = discord.Embed(
             title="📖 Справка по боту",
-            description="Бот оснащен автоматическим аудитом сервера, тикет-системой и динамическими голосовыми каналами.",
+            description="Бот оснащен автоматическим аудитом сервера, тикет-системой, динамическими голосовыми каналами и автовыдачей ролей.",
             color=discord.Color.blurple()
+        )
+        embed.add_field(
+            name="🎭 Автовыдача ролей (Autorole)",
+            value=(
+                "`/set-autorole [роль]` — настроить автовыдачу роли новым участникам при входе (или отключить, если не указать роль)"
+            ),
+            inline=False
         )
         embed.add_field(
             name="🔊 Динамические голосовые каналы",

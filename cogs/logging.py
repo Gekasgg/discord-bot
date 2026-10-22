@@ -129,6 +129,25 @@ class ServerLogging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
+        guild = member.guild
+        settings = config_manager.get_guild(guild.id)
+
+        # 1. Автоматическая выдача роли при входе (Autorole)
+        autorole_id = settings.get("auto_role_id")
+        given_role = None
+        autorole_error = None
+        if autorole_id:
+            role = guild.get_role(autorole_id)
+            if role:
+                try:
+                    await member.add_roles(role, reason="Автовыдача роли при входе на сервер (Autorole)")
+                    given_role = role
+                except discord.Forbidden:
+                    autorole_error = "Недостаточно прав (роль бота ниже выдаваемой роли)"
+                except Exception as e:
+                    autorole_error = str(e)
+
+        # 2. Формирование лога входа
         embed = discord.Embed(
             title="👋 Новый участник присоединился",
             color=discord.Color.green(),
@@ -143,6 +162,11 @@ class ServerLogging(commands.Cog):
             inline=True
         )
         embed.add_field(name="Всего участников", value=str(member.guild.member_count), inline=True)
+        if given_role:
+            embed.add_field(name="🎭 Автовыдача роли", value=f"Успешно выдана роль {given_role.mention}", inline=False)
+        elif autorole_error:
+            embed.add_field(name="⚠️ Автовыдача роли", value=f"Не удалось выдать роль: {autorole_error}", inline=False)
+
         await self.send_log(member.guild, embed)
 
     @commands.Cog.listener()
