@@ -143,53 +143,76 @@ class ServerLogging(commands.Cog):
                     await member.add_roles(role, reason="Автовыдача роли при входе на сервер (Autorole)")
                     given_role = role
                 except discord.Forbidden:
-                    autorole_error = "Недостаточно прав (роль бота ниже выдаваемой роли)"
+                    autorole_error = "Недостаточно прав бота (роль бота ниже выдаваемой роли)"
                 except Exception as e:
                     autorole_error = str(e)
 
-        # 2. Формирование лога входа
+        # 2. Формирование лога входа на сервер
         embed = discord.Embed(
-            title="👋 Новый участник присоединился",
+            title="📥 Участник зашел на сервер",
             color=discord.Color.green(),
             timestamp=discord.utils.utcnow()
         )
+        embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Участник", value=f"{member.mention} ({member})", inline=False)
-        embed.add_field(name="ID участника", value=str(member.id), inline=True)
+
         embed.add_field(
-            name="Аккаунт создан",
-            value=f"<t:{int(member.created_at.timestamp())}:R>",
+            name="👤 Пользователь",
+            value=f"{member.mention} — `{member.name}`\n**ID:** `{member.id}`",
+            inline=False
+        )
+        embed.add_field(
+            name="📅 Аккаунт создан",
+            value=f"<t:{int(member.created_at.timestamp())}:F>\n(<t:{int(member.created_at.timestamp())}:R>)",
             inline=True
         )
-        embed.add_field(name="Всего участников", value=str(member.guild.member_count), inline=True)
+        embed.add_field(
+            name="👥 Всего участников",
+            value=f"**{guild.member_count}**",
+            inline=True
+        )
+
         if given_role:
             embed.add_field(name="🎭 Автовыдача роли", value=f"Успешно выдана роль {given_role.mention}", inline=False)
         elif autorole_error:
             embed.add_field(name="⚠️ Автовыдача роли", value=f"Не удалось выдать роль: {autorole_error}", inline=False)
 
-        await self.send_log(member.guild, embed)
+        embed.set_footer(text=f"Сервер: {guild.name}")
+        await self.send_log(guild, embed)
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
         guild = member.guild
         embed = discord.Embed(
-            title="🚪 Участник покинул сервер",
+            title="📤 Участник покинул сервер",
             color=discord.Color.dark_red(),
             timestamp=discord.utils.utcnow()
         )
+        embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
         embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Участник", value=f"{member} ({member.id})", inline=False)
 
-        roles = [r.mention for r in member.roles if r.name != "@everyone"]
-        if roles:
-            embed.add_field(name="Были роли", value=", ".join(roles)[:1000], inline=False)
+        embed.add_field(
+            name="👤 Пользователь",
+            value=f"<@{member.id}> — `{member.name}`\n**ID:** `{member.id}`",
+            inline=False
+        )
 
         if member.joined_at:
             embed.add_field(
-                name="Был на сервере с",
-                value=f"<t:{int(member.joined_at.timestamp())}:R>",
+                name="⏱️ Был на сервере с",
+                value=f"<t:{int(member.joined_at.timestamp())}:F>\n(<t:{int(member.joined_at.timestamp())}:R>)",
                 inline=True
             )
+
+        embed.add_field(
+            name="👥 Осталось участников",
+            value=f"**{guild.member_count}**",
+            inline=True
+        )
+
+        roles = [r.mention for r in member.roles if r.name != "@everyone"]
+        if roles:
+            embed.add_field(name="🏷️ Были роли", value=", ".join(roles)[:1000], inline=False)
 
         # Проверка, не был ли участник кикнут модератором
         if guild.me.guild_permissions.view_audit_log:
@@ -198,14 +221,15 @@ class ServerLogging(commands.Cog):
                 async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.kick):
                     if entry.target and entry.target.id == member.id:
                         embed.title = "👢 Участник исключен (Кик)"
-                        embed.add_field(name="👤 Модератор", value=f"{entry.user.mention} ({entry.user})", inline=False)
+                        embed.color = discord.Color.orange()
+                        embed.add_field(name="👮 Модератор", value=f"{entry.user.mention} (`{entry.user}`)", inline=True)
                         if entry.reason:
-                            embed.add_field(name="Причина", value=entry.reason, inline=False)
+                            embed.add_field(name="Причина", value=entry.reason, inline=True)
                         break
             except Exception:
                 pass
 
-        embed.add_field(name="Осталось участников", value=str(guild.member_count), inline=True)
+        embed.set_footer(text=f"Сервер: {guild.name}")
         await self.send_log(guild, embed)
 
     @commands.Cog.listener()
