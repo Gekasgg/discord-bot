@@ -3,6 +3,10 @@ from discord import app_commands, ui
 from discord.ext import commands
 from config import config_manager
 from cogs.tickets import TicketLauncherView
+try:
+    from cogs.giveaways import giveaways_manager
+except ImportError:
+    giveaways_manager = None
 
 
 class EditPanelModal(ui.Modal, title="Настройка текста панели тикетов"):
@@ -515,6 +519,7 @@ class AdminCommands(commands.Cog):
 
         level_up_ch = guild.get_channel(settings.get("level_up_channel_id")) if settings.get("level_up_channel_id") else None
         level_roles_count = len(settings.get("level_roles", {}))
+        active_giveaways_count = len(giveaways_manager.get_guild_giveaways(guild.id, active_only=True)) if giveaways_manager else 0
 
         embed = discord.Embed(
             title=f"📊 Настройки бота для {guild.name}",
@@ -525,6 +530,7 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="Автовыдача роли (Autorole)", value=auto_role.mention if auto_role else "❌ Отключена (/set-autorole)", inline=True)
         embed.add_field(name="Система уровней", value=f"✅ Активна (ролей-наград: {level_roles_count})", inline=True)
         embed.add_field(name="Канал оповещений уровней", value=level_up_ch.mention if level_up_ch else "По умолчанию (в текущий)", inline=True)
+        embed.add_field(name="Активных розыгрышей", value=str(active_giveaways_count), inline=True)
         embed.add_field(name="Категория тикетов", value=ticket_cat.name if ticket_cat else "❌ Не настроена (/setup-tickets)", inline=True)
         embed.add_field(name="Роль поддержки", value=role.mention if role else "Не указана", inline=True)
         embed.add_field(name="Канал логов тикетов", value=ticket_log.mention if ticket_log else "По умолчанию (канал логов)", inline=True)
@@ -542,8 +548,19 @@ class AdminCommands(commands.Cog):
         """Информационная справка."""
         embed = discord.Embed(
             title="📖 Справка по боту",
-            description="Бот оснащен аудитом сервера, тикет-системой, динамическими войсами, автовыдачей ролей и системой уровней.",
+            description="Бот оснащен аудитом сервера, тикет-системой, динамическими войсами, автовыдачей ролей, системой уровней и розыгрышами.",
             color=discord.Color.blurple()
+        )
+        embed.add_field(
+            name="🎁 Розыгрыши (Giveaways)",
+            value=(
+                "`/gstart` — запустить новый розыгрыш (таймер, победители, роль, мин. уровень)\n"
+                "`/gend <id>` — досрочно завершить розыгрыш и выбрать победителей\n"
+                "`/greroll <id>` — перевыбрать случайных победителей\n"
+                "`/gcancel <id>` — отменить активный розыгрыш\n"
+                "`/glist` — список всех активных розыгрышей на сервере"
+            ),
+            inline=False
         )
         embed.add_field(
             name="⭐ Система уровней и активности (Leveling)",

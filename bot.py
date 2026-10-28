@@ -13,6 +13,7 @@ from discord.ext import commands
 import config
 from cogs.tickets import TicketLauncherView, TicketControlView
 from cogs.voice import VoiceControlView
+from cogs.giveaways import GiveawayJoinView
 
 # Настройка красивого вывода логов в консоль
 logging.basicConfig(
@@ -41,7 +42,8 @@ class DiscordBot(commands.Bot):
         self.add_view(TicketLauncherView())
         self.add_view(TicketControlView())
         self.add_view(VoiceControlView())
-        logger.info("Постоянные UI Views (кнопки тикетов и войса) зарегистрированы.")
+        self.add_view(GiveawayJoinView())
+        logger.info("Постоянные UI Views (кнопки тикетов, войса и розыгрышей) зарегистрированы.")
 
         # Загрузка когов
         extensions = [
@@ -49,7 +51,8 @@ class DiscordBot(commands.Bot):
             "cogs.tickets",
             "cogs.voice",
             "cogs.admin",
-            "cogs.levels"
+            "cogs.levels",
+            "cogs.giveaways"
         ]
 
         for ext in extensions:
