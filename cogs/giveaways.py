@@ -296,6 +296,72 @@ class GiveawayJoinView(ui.View):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+async def send_winner_dm(bot: commands.Bot, guild: discord.Guild, user_id: int, giveaway: dict, jump_url: str | None = None) -> bool:
+    """
+    Отправляет личное сообщение победителю розыгрыша с поздравлением и секретным текстом/наградой.
+    Возвращает True при успешной доставке, False если у пользователя закрыты ЛС.
+    """
+    try:
+        user = guild.get_member(user_id) or await bot.fetch_user(user_id)
+        if not user or user.bot:
+            return False
+
+        prize = giveaway.get("prize", "Приз")
+        host_id = giveaway.get("host_id")
+        custom_dm = giveaway.get("dm_message")
+
+        embed = discord.Embed(
+            title="🎉 Поздравляем с победой в розыгрыше!",
+            description=f"Вы стали победителем розыгрыша приза **{prize}** на сервере **{guild.name}**! 🎁",
+            color=discord.Color.gold(),
+            timestamp=discord.utils.utcnow()
+        )
+
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
+        if custom_dm:
+            # Форматирование плейсхолдеров {prize}, {server}, {user}, {host}
+            formatted = (
+                custom_dm
+                .replace("{prize}", prize)
+                .replace("{server}", guild.name)
+                .replace("{guild}", guild.name)
+                .replace("{user}", user.display_name)
+                .replace("{host}", f"<@{host_id}>")
+            )
+            embed.add_field(
+                name="📩 Сообщение от организатора / Награда",
+                value=formatted[:1024],
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name="ℹ️ Как получить приз",
+                value=f"Свяжитесь с организатором розыгрыша <@{host_id}> на сервере **{guild.name}** для вручения приза!",
+                inline=False
+            )
+
+        if jump_url:
+            embed.add_field(
+                name="🔗 Ссылка на розыгрыш",
+                value=f"[Перейти к сообщению]({jump_url})",
+                inline=False
+            )
+
+        embed.set_footer(text=f"Сервер: {guild.name} • Antigravity Bot")
+
+        await user.send(embed=embed)
+        logger.info(f"Успешно отправлено ЛС победителю {user} (ID: {user_id}) по розыгрышу {giveaway.get('message_id')}")
+        return True
+    except (discord.Forbidden, discord.HTTPException) as e:
+        logger.warning(f"Не удалось отправить ЛС победителю {user_id} (ЛС закрыто или бот заблокирован): {e}")
+        return False
+    except Exception as e:
+        logger.error(f"Непредвиденная ошибка при отправке ЛС победителю {user_id}: {e}")
+        return False
+
+
 class Giveaways(commands.Cog):
     """Ког управления розыгрышами (Giveaways)."""
 
@@ -392,18 +458,40 @@ class Giveaways(commands.Cog):
             except Exception as e:
                 logger.error(f"Не удалось обновить карточку розыгрыша {message_id}: {e}")
 
-        # Публикуем результат в канал
+        # Отправка сообщений в ЛС победителям
+        closed_dm_winners = []
         if winners_ids:
+            for wid in winners_ids:
+                sent = await send_winner_dm(
+                    self.bot,
+                    guild,
+                    wid,
+                    giveaway,
+                    jump_url=message.jump_url if message else None
+                )
+                if not sent:
+                    closed_dm_winners.append(wid)
+
             mentions = ", ".join(f"<@{wid}>" for wid in winners_ids)
+            desc_lines = [
+                f"🎁 Приз: **{prize}**\n",
+                f"🏆 **Победители:** {mentions}",
+                f"👑 Организатор: <@{host_id}>",
+                f"👥 Всего участников: **{len(raw_participants)}**\n"
+            ]
+
+            if message:
+                desc_lines.append(f"🔗 [Перейти к сообщению розыгрыша]({message.jump_url})\n")
+
+            if closed_dm_winners:
+                cdm_mentions = ", ".join(f"<@{uid}>" for uid in closed_dm_winners)
+                desc_lines.append(f"⚠️ **Внимание:** У {cdm_mentions} **закрыты личные сообщения (ЛС)**! Пожалуйста, откройте ЛС или напишите организатору <@{host_id}>!")
+            else:
+                desc_lines.append("📬 *Победителям отправлено личное сообщение в ЛС с наградой/инструкцией!*")
+
             result_embed = discord.Embed(
                 title="🎊 Итоги розыгрыша!",
-                description=(
-                    f"🎁 Приз: **{prize}**\n\n"
-                    f"🏆 **Победители:** {mentions}\n\n"
-                    f"👑 Организатор: <@{host_id}>\n"
-                    f"👥 Всего участников: **{len(raw_participants)}**\n"
-                    f"🔗 [Перейти к сообщению розыгрыша]({message.jump_url if message else ''})"
-                ),
+                description="\n".join(desc_lines),
                 color=discord.Color.gold(),
                 timestamp=discord.utils.utcnow()
             )
@@ -445,7 +533,8 @@ class Giveaways(commands.Cog):
         channel="Канал для публикации (по умолчанию текущий)",
         description="Дополнительное описание или правила розыгрыша",
         required_role="Обязательная роль для участия",
-        min_level="Минимальный уровень в системе уровней сервера для участия"
+        min_level="Минимальный уровень в системе уровней сервера для участия",
+        dm_text="Текст или промокод, отправляемый победителю в ЛС (поддерживает {prize}, {user}, {server})"
     )
     @app_commands.default_permissions(manage_guild=True)
     async def cmd_gstart(
@@ -457,7 +546,8 @@ class Giveaways(commands.Cog):
         channel: discord.TextChannel | None = None,
         description: str | None = None,
         required_role: discord.Role | None = None,
-        min_level: app_commands.Range[int, 0, 100] = 0
+        min_level: app_commands.Range[int, 0, 100] = 0,
+        dm_text: str | None = None
     ):
         guild = interaction.guild
         if not guild:
@@ -503,6 +593,7 @@ class Giveaways(commands.Cog):
             "message_id": 0,
             "prize": prize,
             "description": description,
+            "dm_message": dm_text,
             "host_id": interaction.user.id,
             "winners_count": winners,
             "created_at": now_ts,
@@ -532,13 +623,48 @@ class Giveaways(commands.Cog):
         updated_embed = build_giveaway_embed(giveaway_data, guild)
         await giveaway_msg.edit(embed=updated_embed)
 
+        dm_info = "\n📩 Сообщение в ЛС победителю: *Настроено (скрыто от участников)*" if dm_text else ""
         await interaction.response.send_message(
             f"✅ **Розыгрыш успешно запущен!**\n"
             f"🎁 Приз: **{prize}**\n"
             f"📍 Канал: {target_channel.mention}\n"
             f"🏆 Победителей: **{winners}**\n"
-            f"⏳ Окончание: <t:{int(end_ts)}:R>\n"
+            f"⏳ Окончание: <t:{int(end_ts)}:R>{dm_info}\n"
             f"🔗 [Перейти к розыгрышу]({giveaway_msg.jump_url})",
+            ephemeral=True
+        )
+
+    @app_commands.command(
+        name="gsetdm",
+        description="Настроить или изменить текст, который бот отправит победителю в ЛС"
+    )
+    @app_commands.describe(
+        message_id="ID сообщения розыгрыша",
+        dm_text="Текст или промокод для отправки в ЛС победителю (поддерживает {prize}, {user}, {server})"
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def cmd_gsetdm(self, interaction: discord.Interaction, message_id: str, dm_text: str):
+        mid = message_id.strip()
+        if not mid.isdigit():
+            await interaction.response.send_message("❌ ID сообщения должен состоять только из цифр.", ephemeral=True)
+            return
+
+        giveaway = giveaways_manager.get_giveaway(int(mid))
+        if not giveaway:
+            await interaction.response.send_message("❌ Розыгрыш с таким ID сообщения не найден.", ephemeral=True)
+            return
+
+        if giveaway.get("ended", False):
+            await interaction.response.send_message("❌ Этот розыгрыш уже завершен.", ephemeral=True)
+            return
+
+        giveaway["dm_message"] = dm_text
+        giveaways_manager.save()
+
+        await interaction.response.send_message(
+            f"✅ **Текст сообщения в ЛС для розыгрыша «{giveaway['prize']}» успешно сохранен!**\n\n"
+            f"Победитель получит в ЛС:\n>>> {dm_text}\n\n"
+            f"*(Этот текст конфиденциален и будет автоматически отправлен победителю при завершении розыгрыша)*",
             ephemeral=True
         )
 
@@ -660,15 +786,38 @@ class Giveaways(commands.Cog):
         except Exception:
             msg = None
 
+        # Отправка сообщений в ЛС новым победителям
+        closed_dm_winners = []
+        for wid in new_winners:
+            sent = await send_winner_dm(
+                self.bot,
+                guild,
+                wid,
+                giveaway,
+                jump_url=msg.jump_url if msg else None
+            )
+            if not sent:
+                closed_dm_winners.append(wid)
+
         mentions = ", ".join(f"<@{w}>" for w in new_winners)
+        desc_lines = [
+            f"🎁 Приз: **{giveaway['prize']}**\n",
+            f"🏆 **Новые победители:** {mentions}",
+            f"👑 Организатор: <@{giveaway.get('host_id')}>\n"
+        ]
+
+        if msg:
+            desc_lines.append(f"🔗 [Перейти к сообщению розыгрыша]({msg.jump_url})\n")
+
+        if closed_dm_winners:
+            cdm_mentions = ", ".join(f"<@{uid}>" for uid in closed_dm_winners)
+            desc_lines.append(f"⚠️ **Внимание:** У {cdm_mentions} **закрыты личные сообщения (ЛС)**! Пожалуйста, откройте ЛС или напишите организатору <@{giveaway.get('host_id')}>!")
+        else:
+            desc_lines.append("📬 *Новым победителям отправлено личное сообщение в ЛС с наградой/инструкцией!*")
+
         reroll_embed = discord.Embed(
             title="🔄 Перевыбор победителя розыгрыша!",
-            description=(
-                f"🎁 Приз: **{giveaway['prize']}**\n\n"
-                f"🏆 **Новые победители:** {mentions}\n\n"
-                f"👑 Организатор: <@{giveaway.get('host_id')}>\n"
-                f"🔗 [Перейти к сообщению розыгрыша]({msg.jump_url if msg else ''})"
-            ),
+            description="\n".join(desc_lines),
             color=discord.Color.gold(),
             timestamp=discord.utils.utcnow()
         )
