@@ -513,6 +513,9 @@ class AdminCommands(commands.Cog):
 
         voice_hub = guild.get_channel(settings.get("voice_hub_channel_id")) if settings.get("voice_hub_channel_id") else None
 
+        level_up_ch = guild.get_channel(settings.get("level_up_channel_id")) if settings.get("level_up_channel_id") else None
+        level_roles_count = len(settings.get("level_roles", {}))
+
         embed = discord.Embed(
             title=f"📊 Настройки бота для {guild.name}",
             color=discord.Color.blue(),
@@ -520,6 +523,8 @@ class AdminCommands(commands.Cog):
         )
         embed.add_field(name="Канал логов аудита", value=log_ch.mention if log_ch else "❌ Не настроен (/set-log-channel)", inline=False)
         embed.add_field(name="Автовыдача роли (Autorole)", value=auto_role.mention if auto_role else "❌ Отключена (/set-autorole)", inline=True)
+        embed.add_field(name="Система уровней", value=f"✅ Активна (ролей-наград: {level_roles_count})", inline=True)
+        embed.add_field(name="Канал оповещений уровней", value=level_up_ch.mention if level_up_ch else "По умолчанию (в текущий)", inline=True)
         embed.add_field(name="Категория тикетов", value=ticket_cat.name if ticket_cat else "❌ Не настроена (/setup-tickets)", inline=True)
         embed.add_field(name="Роль поддержки", value=role.mention if role else "Не указана", inline=True)
         embed.add_field(name="Канал логов тикетов", value=ticket_log.mention if ticket_log else "По умолчанию (канал логов)", inline=True)
@@ -537,8 +542,21 @@ class AdminCommands(commands.Cog):
         """Информационная справка."""
         embed = discord.Embed(
             title="📖 Справка по боту",
-            description="Бот оснащен автоматическим аудитом сервера, тикет-системой, динамическими голосовыми каналами и автовыдачей ролей.",
+            description="Бот оснащен аудитом сервера, тикет-системой, динамическими войсами, автовыдачей ролей и системой уровней.",
             color=discord.Color.blurple()
+        )
+        embed.add_field(
+            name="⭐ Система уровней и активности (Leveling)",
+            value=(
+                "`/rank [пользователь]` — карточка вашего уровня, опыта и места в топе\n"
+                "`/leaderboard` — таблица лидеров сервера по активности и уровням\n"
+                "`/set-level-channel [канал]` — канал для поздравлений с новыми уровнями\n"
+                "`/set-level-role <уровень> <роль>` — назначить роль за достижение уровня\n"
+                "`/remove-level-role <уровень>` — удалить награду ролью\n"
+                "`/level-roles` — список настроенных ролей за уровни\n"
+                "`/add-xp` | `/remove-xp` | `/reset-levels` — управление опытом"
+            ),
+            inline=False
         )
         embed.add_field(
             name="🎭 Автовыдача ролей (Autorole)",
@@ -571,18 +589,9 @@ class AdminCommands(commands.Cog):
             name="📜 Логи сервера и аудит",
             value=(
                 "`/set-log-channel` — установить канал аудита сервера\n"
+                "`/test-log` — проверить отправку логов в канал\n"
                 "`/bot-status` — посмотреть текущую конфигурацию сервера\n"
                 "`!sync` — принудительно обновить слэш-команды в чате"
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🎫 Возможности тикет-системы",
-            value=(
-                "• Полностью настраиваемые окно создания и приветствие\n"
-                "• Приватный доступ только автору и роли поддержки\n"
-                "• Сохранение полного транскрипта переписки (`.txt`) при закрытии\n"
-                "• Кнопка «Принять тикет» для модераторов"
             ),
             inline=False
         )

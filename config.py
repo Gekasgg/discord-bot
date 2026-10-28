@@ -38,7 +38,11 @@ DEFAULT_GUILD_SETTINGS = {
     "voice_category_id": None,
     "temp_voice_channels": {},  # channel_id: {"owner_id": ..., "created_at": ...}
     # Автовыдача роли при входе (Autorole)
-    "auto_role_id": None
+    "auto_role_id": None,
+    # Настройки системы уровней (Leveling)
+    "levels_enabled": True,
+    "level_up_channel_id": None,  # None = текущий канал сообщения
+    "level_roles": {}  # {"5": role_id, "10": role_id, ...}
 }
 
 

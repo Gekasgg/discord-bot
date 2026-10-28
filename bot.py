@@ -47,7 +47,8 @@ class DiscordBot(commands.Bot):
             "cogs.logging",
             "cogs.tickets",
             "cogs.voice",
-            "cogs.admin"
+            "cogs.admin",
+            "cogs.levels"
         ]
 
         for ext in extensions:
