@@ -31,7 +31,8 @@ class DiscordBot(commands.Bot):
         super().__init__(
             command_prefix=config.COMMAND_PREFIX,
             intents=intents,
-            help_command=None
+            help_command=None,
+            proxy=config.PROXY
         )
 
     async def setup_hook(self):
