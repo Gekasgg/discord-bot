@@ -270,25 +270,104 @@ class Leveling(commands.Cog):
         if is_lvl_up:
             await self.handle_level_up(guild, member, new_lvl, context_channel=message.channel)
 
+    async def update_member_level_roles(
+        self,
+        guild: discord.Guild,
+        member: discord.Member,
+        current_level: int
+    ) -> tuple[discord.Role | None, list[discord.Role]]:
+        """
+        Синхронизирует роли уровней участника в зависимости от текущего уровня и режима (замена старых ролей/накопление).
+        Возвращает (добавленная_роль, список_снятых_ролей).
+        """
+        settings = config_manager.get_guild(guild.id)
+        level_roles = settings.get("level_roles", {})
+        if not level_roles:
+            return None, []
+
+        replace_mode = settings.get("level_roles_replace", True)
+
+        # Сортируем пары (требуемый_уровень, role_id) по возрастанию
+        sorted_tiers = sorted(
+            [(int(lvl), int(rid)) for lvl, rid in level_roles.items() if str(lvl).isdigit()],
+            key=lambda x: x[0]
+        )
+
+        all_level_role_ids = {rid for _, rid in sorted_tiers}
+
+        # Определяем наивысшую подходящую роль для текущего уровня
+        target_role = None
+        target_role_id = None
+        for req_level, role_id in sorted_tiers:
+            if current_level >= req_level:
+                target_role_id = role_id
+
+        if target_role_id:
+            target_role = guild.get_role(target_role_id)
+
+        roles_to_add: list[discord.Role] = []
+        roles_to_remove: list[discord.Role] = []
+
+        if replace_mode:
+            # РЕЖИМ РАНГОВ (активна только текущая роль диапазона, предыдущие снимаются)
+            if target_role:
+                if target_role not in member.roles:
+                    roles_to_add.append(target_role)
+
+                # Снимаем любые другие роли уровней, которые есть у участника
+                for r in member.roles:
+                    if r.id in all_level_role_ids and r.id != target_role.id:
+                        roles_to_remove.append(r)
+            else:
+                # Уровень ниже минимального настроенного — снимаем все роли уровней, если они есть
+                for r in member.roles:
+                    if r.id in all_level_role_ids:
+                        roles_to_remove.append(r)
+        else:
+            # НАКОПИТЕЛЬНЫЙ РЕЖИМ (сохранять все ранее полученные роли)
+            for req_level, role_id in sorted_tiers:
+                r = guild.get_role(role_id)
+                if not r:
+                    continue
+                if current_level >= req_level:
+                    if r not in member.roles:
+                        roles_to_add.append(r)
+                else:
+                    if r in member.roles:
+                        roles_to_remove.append(r)
+
+        # Фильтрация по иерархии прав бота
+        bot_top = guild.me.top_role
+        filtered_add = [r for r in roles_to_add if bot_top > r]
+        filtered_remove = [r for r in roles_to_remove if bot_top > r]
+
+        if len(filtered_add) < len(roles_to_add):
+            logger.warning(f"Роль бота ниже одной из выдаваемых ролей на сервере {guild.name}")
+        if len(filtered_remove) < len(roles_to_remove):
+            logger.warning(f"Роль бота ниже одной из снимаемых ролей на сервере {guild.name}")
+
+        added_role = None
+        if filtered_add:
+            try:
+                await member.add_roles(*filtered_add, reason=f"Награда за {current_level} уровень активности")
+                added_role = filtered_add[0]
+            except Exception as e:
+                logger.error(f"Ошибка при выдаче ролей {filtered_add} участнику {member}: {e}")
+
+        if filtered_remove:
+            try:
+                await member.remove_roles(*filtered_remove, reason=f"Замена ранга активности на {current_level} уровень")
+            except Exception as e:
+                logger.error(f"Ошибка при снятии предыдущих ролей {filtered_remove} у {member}: {e}")
+
+        return added_role, filtered_remove
+
     async def handle_level_up(self, guild: discord.Guild, member: discord.Member, new_level: int, context_channel: discord.TextChannel | None):
         """Оповещение о повышении уровня и выдача роли-награды."""
         settings = config_manager.get_guild(guild.id)
-        level_roles = settings.get("level_roles", {})
 
-        # Проверка и выдача роли за уровень
-        role_reward = None
-        role_id = level_roles.get(str(new_level))
-        if role_id:
-            role = guild.get_role(int(role_id))
-            if role:
-                try:
-                    if guild.me.top_role > role:
-                        await member.add_roles(role, reason=f"Награда за достижение {new_level} уровня")
-                        role_reward = role
-                    else:
-                        logger.warning(f"Роль бота ниже роли награды {role.name} на сервере {guild.name}")
-                except Exception as e:
-                    logger.error(f"Ошибка при выдаче роли {role.name} пользователю {member}: {e}")
+        # Обновление и синхронизация ролей за уровень (с автоматическим снятием старых ролей)
+        role_reward, removed_roles = await self.update_member_level_roles(guild, member, new_level)
 
         # Поиск канала для отправки оповещения
         target_channel = context_channel
@@ -317,7 +396,15 @@ class Leveling(commands.Cog):
             embed.add_field(name="Прогресс уровня", value=f"`{bar}` `{cur_xp} / {next_xp} XP`", inline=False)
 
             if role_reward:
-                embed.add_field(name="🎁 Новая роль", value=f"Тебе присвоена роль: {role_reward.mention}", inline=False)
+                if removed_roles:
+                    rem_str = ", ".join(r.mention for r in removed_roles)
+                    embed.add_field(
+                        name="🎖️ Новый ранг!",
+                        value=f"Тебе присвоена роль: {role_reward.mention}\n*(Предыдущая роль {rem_str} снята)*",
+                        inline=False
+                    )
+                else:
+                    embed.add_field(name="🎁 Новая роль", value=f"Тебе присвоена роль: {role_reward.mention}", inline=False)
 
             embed.set_footer(text=f"Всего сообщений: {user_data.get('messages', 0)} | Используйте /rank")
 
@@ -519,20 +606,68 @@ class Leveling(commands.Cog):
             await interaction.response.send_message("ℹ️ На этом сервере еще не настроены роли за уровни. Используйте `/set-level-role`.", ephemeral=True)
             return
 
-        sorted_levels = sorted([(int(lvl), rid) for lvl, rid in level_roles.items()], key=lambda x: x[0])
+        replace_mode = settings.get("level_roles_replace", True)
+        sorted_levels = sorted([(int(lvl), rid) for lvl, rid in level_roles.items() if str(lvl).isdigit()], key=lambda x: x[0])
         lines = []
-        for lvl, rid in sorted_levels:
+        for i, (lvl, rid) in enumerate(sorted_levels):
             role = guild.get_role(rid)
             role_str = role.mention if role else f"`ID: {rid} (Удалена)`"
-            lines.append(f"⭐ **Уровень {lvl}** ➔ {role_str}")
+            if replace_mode:
+                if i + 1 < len(sorted_levels):
+                    next_lvl = sorted_levels[i + 1][0]
+                    range_str = f"⭐ **Уровни {lvl} - {next_lvl - 1}**"
+                else:
+                    range_str = f"⭐ **Уровень {lvl}+**"
+            else:
+                range_str = f"⭐ **Уровень {lvl}**"
+            lines.append(f"{range_str} ➔ {role_str}")
+
+        mode_desc = (
+            "🔄 **Режим: Замена старых ролей (ранги)**\n*При переходе в следующий диапазон предыдущая роль автоматически снимается.*"
+            if replace_mode else
+            "📚 **Режим: Накопление всех ролей**\n*Участники сохраняют все полученные роли за предыдущие уровни.*"
+        )
 
         embed = discord.Embed(
             title=f"🎖️ Роли за уровни — {guild.name}",
-            description="\n".join(lines),
+            description=f"{mode_desc}\n\n" + "\n".join(lines),
             color=discord.Color.blue()
         )
-        embed.set_footer(text="Роли выдаются автоматически при повышении уровня")
+        embed.set_footer(text="Изменить режим: /set-level-roles-mode • Назначить роль: /set-level-role")
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="set-level-roles-mode",
+        description="Настроить режим выдачи ролей: заменять старые роли (ранги) или накапливать все"
+    )
+    @app_commands.describe(mode="Режим распределения ролей за уровни")
+    @app_commands.choices(mode=[
+        app_commands.Choice(name="🔄 Заменять старые роли на новые (ранги с 10 по 20, с 20 по 30)", value="replace"),
+        app_commands.Choice(name="📚 Накапливать все полученные роли", value="stack"),
+    ])
+    @app_commands.default_permissions(administrator=True)
+    async def cmd_set_level_roles_mode(self, interaction: discord.Interaction, mode: app_commands.Choice[str]):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        is_replace = (mode.value == "replace")
+        config_manager.set_guild_value(guild.id, "level_roles_replace", is_replace)
+
+        if is_replace:
+            msg = (
+                "✅ **Включен режим рангов (замена старых ролей)!**\n\n"
+                "Теперь при переходе на следующий диапазон (например, с 10-20 на 20-30) предыдущая роль ранга будет автоматически сниматься, а новая выдаваться.\n"
+                "У участников всегда будет только актуальная роль ранга."
+            )
+        else:
+            msg = (
+                "✅ **Включен накопительный режим ролей!**\n\n"
+                "Участники будут сохранять все ранее полученные роли за уровни."
+            )
+
+        await interaction.response.send_message(msg, ephemeral=True)
 
     @app_commands.command(
         name="add-xp",
@@ -569,6 +704,8 @@ class Leveling(commands.Cog):
         user_data = levels_manager.get_user_data(interaction.guild_id, user.id)
         new_xp = max(0, user_data.get("xp", 0) - amount)
         old_lvl, new_lvl = levels_manager.set_xp(interaction.guild_id, user.id, new_xp)
+        if interaction.guild:
+            await self.update_member_level_roles(interaction.guild, user, new_lvl)
 
         await interaction.response.send_message(
             f"✅ У пользователя {user.mention} списано **-{amount:,} XP**.\nНовый баланс: **{new_xp:,} XP** (Уровень {new_lvl}).",
@@ -588,7 +725,9 @@ class Leveling(commands.Cog):
         guild = interaction.guild
         if user:
             levels_manager.reset_user(guild.id, user.id)
-            await interaction.response.send_message(f"✅ Уровень и опыт для {user.mention} полностью сброшены.", ephemeral=True)
+            if guild:
+                await self.update_member_level_roles(guild, user, 0)
+            await interaction.response.send_message(f"✅ Уровень, опыт и роли уровней для {user.mention} полностью сброшены.", ephemeral=True)
             return
 
         if confirm != "ДА":

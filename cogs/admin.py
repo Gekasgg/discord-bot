@@ -519,6 +519,8 @@ class AdminCommands(commands.Cog):
 
         level_up_ch = guild.get_channel(settings.get("level_up_channel_id")) if settings.get("level_up_channel_id") else None
         level_roles_count = len(settings.get("level_roles", {}))
+        replace_mode = settings.get("level_roles_replace", True)
+        roles_mode_str = "Ранги (замена старых)" if replace_mode else "Накопительный"
         active_giveaways_count = len(giveaways_manager.get_guild_giveaways(guild.id, active_only=True)) if giveaways_manager else 0
         gw_role = guild.get_role(settings.get("giveaway_role_id")) if settings.get("giveaway_role_id") else None
         gw_users_count = len(settings.get("giveaway_users", []))
@@ -533,7 +535,7 @@ class AdminCommands(commands.Cog):
         )
         embed.add_field(name="Канал логов аудита", value=log_ch.mention if log_ch else "❌ Не настроен (/set-log-channel)", inline=False)
         embed.add_field(name="Автовыдача роли (Autorole)", value=auto_role.mention if auto_role else "❌ Отключена (/set-autorole)", inline=True)
-        embed.add_field(name="Система уровней", value=f"✅ Активна (ролей-наград: {level_roles_count})", inline=True)
+        embed.add_field(name="Система уровней", value=f"✅ Активна (ролей: {level_roles_count}, {roles_mode_str})", inline=True)
         embed.add_field(name="Канал оповещений уровней", value=level_up_ch.mention if level_up_ch else "По умолчанию (в текущий)", inline=True)
         embed.add_field(name="Активных розыгрышей", value=str(active_giveaways_count), inline=True)
         embed.add_field(name="Роль розыгрышей", value=gw_access_text, inline=True)
@@ -582,6 +584,7 @@ class AdminCommands(commands.Cog):
                 "`/set-level-role <уровень> <роль>` — назначить роль за достижение уровня\n"
                 "`/remove-level-role <уровень>` — удалить награду ролью\n"
                 "`/level-roles` — список настроенных ролей за уровни\n"
+                "`/set-level-roles-mode <режим>` — режим ролей: заменять старую роль на новую (ранги) или накапливать\n"
                 "`/add-xp` | `/remove-xp` | `/reset-levels` — управление опытом"
             ),
             inline=False
