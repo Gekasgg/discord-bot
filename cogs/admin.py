@@ -520,6 +520,11 @@ class AdminCommands(commands.Cog):
         level_up_ch = guild.get_channel(settings.get("level_up_channel_id")) if settings.get("level_up_channel_id") else None
         level_roles_count = len(settings.get("level_roles", {}))
         active_giveaways_count = len(giveaways_manager.get_guild_giveaways(guild.id, active_only=True)) if giveaways_manager else 0
+        gw_role = guild.get_role(settings.get("giveaway_role_id")) if settings.get("giveaway_role_id") else None
+        gw_users_count = len(settings.get("giveaway_users", []))
+        gw_access_text = gw_role.mention if gw_role else "Только администраторы"
+        if gw_users_count > 0:
+            gw_access_text += f" (+{gw_users_count} участн.)"
 
         embed = discord.Embed(
             title=f"📊 Настройки бота для {guild.name}",
@@ -531,6 +536,7 @@ class AdminCommands(commands.Cog):
         embed.add_field(name="Система уровней", value=f"✅ Активна (ролей-наград: {level_roles_count})", inline=True)
         embed.add_field(name="Канал оповещений уровней", value=level_up_ch.mention if level_up_ch else "По умолчанию (в текущий)", inline=True)
         embed.add_field(name="Активных розыгрышей", value=str(active_giveaways_count), inline=True)
+        embed.add_field(name="Роль розыгрышей", value=gw_access_text, inline=True)
         embed.add_field(name="Категория тикетов", value=ticket_cat.name if ticket_cat else "❌ Не настроена (/setup-tickets)", inline=True)
         embed.add_field(name="Роль поддержки", value=role.mention if role else "Не указана", inline=True)
         embed.add_field(name="Канал логов тикетов", value=ticket_log.mention if ticket_log else "По умолчанию (канал логов)", inline=True)
@@ -559,7 +565,11 @@ class AdminCommands(commands.Cog):
                 "`/gend <id>` — досрочно завершить розыгрыш и выбрать победителей\n"
                 "`/greroll <id>` — перевыбрать случайных победителей\n"
                 "`/gcancel <id>` — отменить активный розыгрыш\n"
-                "`/glist` — список всех активных розыгрышей на сервере"
+                "`/glist` — список всех активных розыгрышей на сервере\n"
+                "`/set-giveaway-role [роль]` — назначить роль ведущего розыгрышей\n"
+                "`/add-giveaway-manager <user>` — персональный доступ к розыгрышам\n"
+                "`/remove-giveaway-manager <user>` — отозвать доступ к розыгрышам\n"
+                "`/giveaway-access` — посмотреть, у кого есть права на розыгрыши"
             ),
             inline=False
         )

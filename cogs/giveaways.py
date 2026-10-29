@@ -8,7 +8,7 @@ from pathlib import Path
 import discord
 from discord import app_commands, ui
 from discord.ext import commands, tasks
-from config import DATA_DIR
+from config import DATA_DIR, config_manager
 
 try:
     from cogs.levels import levels_manager
@@ -50,6 +50,49 @@ def parse_duration(duration_str: str) -> int | None:
         total_seconds += int(value_str) * multiplier
 
     return total_seconds if total_seconds > 0 else None
+
+
+def check_giveaway_permission(interaction: discord.Interaction) -> tuple[bool, str]:
+    """
+    Проверяет, имеет ли пользователь право управлять розыгрышами:
+    1. Администраторы сервера (или владелец)
+    2. Участники с правом управления сервером (manage_guild)
+    3. Участники с настроенной ролью ведущего розыгрышей (giveaway_role_id)
+    4. Конкретные пользователи из списка разрешенных (giveaway_users)
+    """
+    if not interaction.guild or not isinstance(interaction.user, discord.Member):
+        return False, "❌ Команда доступна только на сервере."
+
+    member = interaction.user
+
+    # Владелец сервера
+    if member.id == interaction.guild.owner_id:
+        return True, ""
+
+    # Права администратора или управления сервером
+    if member.guild_permissions.administrator or member.guild_permissions.manage_guild:
+        return True, ""
+
+    settings = config_manager.get_guild(interaction.guild.id)
+
+    # Проверка настроенной роли ведущего розыгрышей
+    giveaway_role_id = settings.get("giveaway_role_id")
+    if giveaway_role_id:
+        role = interaction.guild.get_role(int(giveaway_role_id))
+        if role and role in member.roles:
+            return True, ""
+
+    # Проверка списка персональных пользователей
+    giveaway_users = settings.get("giveaway_users", [])
+    if member.id in giveaway_users:
+        return True, ""
+
+    msg = (
+        "❌ **Отказано в доступе!**\n"
+        "Создавать и проводить розыгрыши могут только администраторы сервера или участники со специальным разрешением.\n\n"
+        "💡 *Администратор сервера может назначить роль командой `/set-giveaway-role` или добавить вас персонально через `/add-giveaway-manager`.*"
+    )
+    return False, msg
 
 
 class GiveawaysManager:
@@ -536,7 +579,6 @@ class Giveaways(commands.Cog):
         min_level="Минимальный уровень в системе уровней сервера для участия",
         dm_text="Текст или промокод, отправляемый победителю в ЛС (поддерживает {prize}, {user}, {server})"
     )
-    @app_commands.default_permissions(manage_guild=True)
     async def cmd_gstart(
         self,
         interaction: discord.Interaction,
@@ -552,6 +594,11 @@ class Giveaways(commands.Cog):
         guild = interaction.guild
         if not guild:
             await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        has_perm, err_msg = check_giveaway_permission(interaction)
+        if not has_perm:
+            await interaction.response.send_message(err_msg, ephemeral=True)
             return
 
         seconds = parse_duration(duration)
@@ -642,8 +689,12 @@ class Giveaways(commands.Cog):
         message_id="ID сообщения розыгрыша",
         dm_text="Текст или промокод для отправки в ЛС победителю (поддерживает {prize}, {user}, {server})"
     )
-    @app_commands.default_permissions(manage_guild=True)
     async def cmd_gsetdm(self, interaction: discord.Interaction, message_id: str, dm_text: str):
+        has_perm, err_msg = check_giveaway_permission(interaction)
+        if not has_perm:
+            await interaction.response.send_message(err_msg, ephemeral=True)
+            return
+
         mid = message_id.strip()
         if not mid.isdigit():
             await interaction.response.send_message("❌ ID сообщения должен состоять только из цифр.", ephemeral=True)
@@ -673,8 +724,12 @@ class Giveaways(commands.Cog):
         description="Досрочно завершить розыгрыш и сразу определить победителей"
     )
     @app_commands.describe(message_id="ID сообщения розыгрыша")
-    @app_commands.default_permissions(manage_guild=True)
     async def cmd_gend(self, interaction: discord.Interaction, message_id: str):
+        has_perm, err_msg = check_giveaway_permission(interaction)
+        if not has_perm:
+            await interaction.response.send_message(err_msg, ephemeral=True)
+            return
+
         mid = message_id.strip()
         if not mid.isdigit():
             await interaction.response.send_message("❌ ID сообщения должен состоять только из цифр.", ephemeral=True)
@@ -712,13 +767,17 @@ class Giveaways(commands.Cog):
         message_id="ID сообщения завершенного розыгрыша",
         winners="Количество новых победителей (по умолчанию 1)"
     )
-    @app_commands.default_permissions(manage_guild=True)
     async def cmd_greroll(
         self,
         interaction: discord.Interaction,
         message_id: str,
         winners: app_commands.Range[int, 1, 20] = 1
     ):
+        has_perm, err_msg = check_giveaway_permission(interaction)
+        if not has_perm:
+            await interaction.response.send_message(err_msg, ephemeral=True)
+            return
+
         mid = message_id.strip()
         if not mid.isdigit():
             await interaction.response.send_message("❌ ID сообщения должен состоять только из цифр.", ephemeral=True)
@@ -834,8 +893,12 @@ class Giveaways(commands.Cog):
         description="Отменить активный розыгрыш без выбора победителей"
     )
     @app_commands.describe(message_id="ID сообщения розыгрыша")
-    @app_commands.default_permissions(manage_guild=True)
     async def cmd_gcancel(self, interaction: discord.Interaction, message_id: str):
+        has_perm, err_msg = check_giveaway_permission(interaction)
+        if not has_perm:
+            await interaction.response.send_message(err_msg, ephemeral=True)
+            return
+
         mid = message_id.strip()
         if not mid.isdigit():
             await interaction.response.send_message("❌ ID сообщения должен состоять только из цифр.", ephemeral=True)
@@ -873,6 +936,155 @@ class Giveaways(commands.Cog):
                 logger.error(f"Не удалось обновить отмененный розыгрыш {mid}: {e}")
 
         await interaction.response.send_message(f"🚨 Розыгрыш **{giveaway['prize']}** успешно отменен.", ephemeral=True)
+
+    # ==========================================
+    # УПРАВЛЕНИЕ ПРАВАМИ НА РОЗЫГРЫШИ
+    # ==========================================
+
+    @app_commands.command(
+        name="set-giveaway-role",
+        description="Назначить роль, дающую право создавать и управлять розыгрышами"
+    )
+    @app_commands.describe(role="Роль ведущих розыгрышей (оставьте пустым для сброса)")
+    @app_commands.default_permissions(administrator=True)
+    async def cmd_set_giveaway_role(self, interaction: discord.Interaction, role: discord.Role | None = None):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        if role:
+            if role.is_default():
+                await interaction.response.send_message("❌ Роль @everyone не может быть назначена ролью ведущего розыгрышей.", ephemeral=True)
+                return
+
+            config_manager.set_guild_value(guild.id, "giveaway_role_id", role.id)
+            embed = discord.Embed(
+                title="✅ Роль ведущего розыгрышей настроена",
+                description=(
+                    f"Участники с ролью {role.mention} теперь имеют право создавать и проводить розыгрыши на сервере.\n\n"
+                    f"**Доступные им команды:**\n"
+                    f"• `/gstart` — запуск нового розыгрыша\n"
+                    f"• `/gsetdm` — настройка награды/текста в ЛС победителю\n"
+                    f"• `/gend` — досрочное завершение розыгрыша\n"
+                    f"• `/greroll` — перевыбор победителей\n"
+                    f"• `/gcancel` — отмена розыгрыша\n\n"
+                    f"*(Остальные участники без этой роли использовать эти команды не смогут)*"
+                ),
+                color=discord.Color.green(),
+                timestamp=discord.utils.utcnow()
+            )
+        else:
+            config_manager.set_guild_value(guild.id, "giveaway_role_id", None)
+            embed = discord.Embed(
+                title="✅ Роль ведущего розыгрышей сброшена",
+                description="Роль удалена. Теперь создавать и управлять розыгрышами могут только **администраторы сервера**.",
+                color=discord.Color.blue(),
+                timestamp=discord.utils.utcnow()
+            )
+
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="add-giveaway-manager",
+        description="Выдать конкретному участнику персональный доступ к созданию розыгрышей"
+    )
+    @app_commands.describe(user="Участник, которому разрешается проводить розыгрыши")
+    @app_commands.default_permissions(administrator=True)
+    async def cmd_add_giveaway_manager(self, interaction: discord.Interaction, user: discord.Member):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        if user.bot:
+            await interaction.response.send_message("❌ Нельзя выдать права боту.", ephemeral=True)
+            return
+
+        settings = config_manager.get_guild(guild.id)
+        giveaway_users = list(settings.get("giveaway_users", []))
+
+        if user.id in giveaway_users:
+            await interaction.response.send_message(f"⚠️ Участник {user.mention} уже имеет персональный доступ к розыгрышам.", ephemeral=True)
+            return
+
+        giveaway_users.append(user.id)
+        config_manager.set_guild_value(guild.id, "giveaway_users", giveaway_users)
+
+        embed = discord.Embed(
+            title="✅ Персональный доступ выдан",
+            description=f"Пользователю {user.mention} разрешено создавать и проводить розыгрыши на сервере (`/gstart`, `/gend`, `/greroll`, `/gcancel`, `/gsetdm`).",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="remove-giveaway-manager",
+        description="Отозвать персональный доступ к розыгрышам у конкретного участника"
+    )
+    @app_commands.describe(user="Участник, у которого нужно забрать доступ")
+    @app_commands.default_permissions(administrator=True)
+    async def cmd_remove_giveaway_manager(self, interaction: discord.Interaction, user: discord.Member):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        settings = config_manager.get_guild(guild.id)
+        giveaway_users = list(settings.get("giveaway_users", []))
+
+        if user.id not in giveaway_users:
+            await interaction.response.send_message(f"⚠️ Участник {user.mention} не находится в списке персонального доступа.", ephemeral=True)
+            return
+
+        giveaway_users.remove(user.id)
+        config_manager.set_guild_value(guild.id, "giveaway_users", giveaway_users)
+
+        embed = discord.Embed(
+            title="✅ Доступ отозван",
+            description=f"Персональный доступ к управлению розыгрышами для {user.mention} был успешно удален.",
+            color=discord.Color.orange(),
+            timestamp=discord.utils.utcnow()
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @app_commands.command(
+        name="giveaway-access",
+        description="Посмотреть текущие роли и пользователей с доступом к созданию розыгрышей"
+    )
+    async def cmd_giveaway_access(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        settings = config_manager.get_guild(guild.id)
+        role_id = settings.get("giveaway_role_id")
+        user_ids = settings.get("giveaway_users", [])
+
+        role_str = f"<@&{role_id}>" if role_id and guild.get_role(int(role_id)) else "*Не настроена (только администраторы)*"
+
+        if user_ids:
+            users_str = ", ".join(f"<@{uid}>" for uid in user_ids)
+        else:
+            users_str = "*Нет участников с персональным доступом*"
+
+        embed = discord.Embed(
+            title=f"🔐 Права на проведение розыгрышей — {guild.name}",
+            description="Кто может запускать и управлять розыгрышами на этом сервере:\n",
+            color=discord.Color.blue(),
+            timestamp=discord.utils.utcnow()
+        )
+        embed.add_field(name="🎖️ Роль ведущего розыгрышей", value=role_str, inline=False)
+        embed.add_field(name="👤 Персональный доступ", value=users_str, inline=False)
+        embed.add_field(
+            name="👑 Администраторы сервера",
+            value="Всегда имеют полный доступ к созданию и управлению любыми розыгрышами.",
+            inline=False
+        )
+        embed.set_footer(text="Настройка: /set-giveaway-role | /add-giveaway-manager | /remove-giveaway-manager")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
         name="glist",

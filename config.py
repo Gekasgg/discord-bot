@@ -43,7 +43,10 @@ DEFAULT_GUILD_SETTINGS = {
     # Настройки системы уровней (Leveling)
     "levels_enabled": True,
     "level_up_channel_id": None,  # None = текущий канал сообщения
-    "level_roles": {}  # {"5": role_id, "10": role_id, ...}
+    "level_roles": {},  # {"5": role_id, "10": role_id, ...}
+    # Настройки прав на управление розыгрышами (Giveaways)
+    "giveaway_role_id": None,      # ID роли ведущего розыгрышей
+    "giveaway_users": []           # Список ID конкретных пользователей с доступом к розыгрышам
 }
 
 
