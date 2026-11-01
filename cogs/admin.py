@@ -500,52 +500,299 @@ class AdminCommands(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
+        name="clear",
+        description="Быстрая очистка чата от сообщений с поддержкой фильтров (боты, пользователь, текст)"
+    )
+    @app_commands.describe(
+        amount="Количество последних сообщений для проверки и удаления (от 1 до 100)",
+        user="Удалять сообщения только от этого пользователя (опционально)",
+        only_bots="Удалять сообщения только от ботов и вебхуков (быстрая чистка спама)",
+        contains="Удалять только сообщения, содержащие определенный текст (опционально)"
+    )
+    @app_commands.default_permissions(manage_messages=True)
+    async def cmd_clear(
+        self,
+        interaction: discord.Interaction,
+        amount: app_commands.Range[int, 1, 100] = 10,
+        user: discord.Member | None = None,
+        only_bots: bool = False,
+        contains: str | None = None
+    ):
+        """Быстрая очистка сообщений в текущем канале."""
+        guild = interaction.guild
+        channel = interaction.channel
+        if not guild or not isinstance(channel, discord.TextChannel):
+            await interaction.response.send_message("❌ Команда доступна только в текстовых каналах сервера.", ephemeral=True)
+            return
+
+        # Проверка прав бота в канале
+        bot_member = guild.me
+        if not channel.permissions_for(bot_member).manage_messages:
+            await interaction.response.send_message(
+                f"❌ У бота нет права **«Управлять сообщениями» (Manage Messages)** в канале {channel.mention}!",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        def check_msg(m: discord.Message) -> bool:
+            if user and m.author.id != user.id:
+                return False
+            if only_bots and not (m.author.bot or m.webhook_id is not None):
+                return False
+            if contains and contains.lower() not in (m.content or "").lower():
+                return False
+            return True
+
+        try:
+            # bulk=True автоматически использует быстрое удаление пачкой
+            deleted = await channel.purge(limit=amount, check=check_msg, bulk=True)
+        except discord.HTTPException as e:
+            await interaction.followup.send(f"❌ Ошибка при удалении сообщений: {e}", ephemeral=True)
+            return
+
+        embed = discord.Embed(
+            title="🧹 Чат успешно очищен",
+            description=f"В канале {channel.mention} удалено **{len(deleted)}** сообщений.",
+            color=discord.Color.green(),
+            timestamp=discord.utils.utcnow()
+        )
+        if user:
+            embed.add_field(name="Фильтр по автору", value=user.mention, inline=True)
+        if only_bots:
+            embed.add_field(name="Фильтр", value="Только боты и вебхуки", inline=True)
+        if contains:
+            embed.add_field(name="Фильтр по тексту", value=f"`{contains}`", inline=True)
+
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+        # Оповещение в канал логов аудита при наличии
+        settings = config_manager.get_guild(guild.id)
+        log_cid = settings.get("log_channel_id")
+        if log_cid and log_cid != channel.id:
+            log_ch = guild.get_channel(log_cid)
+            if isinstance(log_ch, discord.TextChannel) and log_ch.permissions_for(bot_member).send_messages:
+                audit_embed = discord.Embed(
+                    title="🧹 Массовая очистка сообщений (/clear)",
+                    description=(
+                        f"Модератор {interaction.user.mention} очистил сообщения в канале {channel.mention}.\n"
+                        f"Удалено сообщений: **{len(deleted)}**"
+                    ),
+                    color=discord.Color.orange(),
+                    timestamp=discord.utils.utcnow()
+                )
+                if user:
+                    audit_embed.add_field(name="Фильтр по автору", value=user.mention, inline=True)
+                if only_bots:
+                    audit_embed.add_field(name="Фильтр", value="Только боты/вебхуки", inline=True)
+                try:
+                    await log_ch.send(embed=audit_embed)
+                except Exception:
+                    pass
+
+    @app_commands.command(
+        name="server-config",
+        description="Полная диагностика всех настроек сервера (проверка целостности ролей, каналов и безопасности)"
+    )
+    @app_commands.default_permissions(administrator=True)
+    async def cmd_server_config(self, interaction: discord.Interaction):
+        """Полная проверка всех настроек сервера с выявлением сбоев."""
+        await self._render_full_server_config(interaction)
+
+    @app_commands.command(
         name="bot-status",
-        description="Проверить текущие настройки бота на этом сервере"
+        description="Проверить текущие настройки бота и целостность конфигурации на этом сервере"
     )
     @app_commands.default_permissions(administrator=True)
     async def cmd_status(self, interaction: discord.Interaction):
-        """Статус и настройки бота."""
+        """Статус и настройки бота (полный аудит)."""
+        await self._render_full_server_config(interaction)
+
+    async def _render_full_server_config(self, interaction: discord.Interaction):
+        """Генерирует исчерпывающий отчёт о состоянии сервера и настроек бота."""
         guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
         settings = config_manager.get_guild(guild.id)
-
-        log_ch = guild.get_channel(settings.get("log_channel_id")) if settings.get("log_channel_id") else None
-        ticket_cat = guild.get_channel(settings.get("ticket_category_id")) if settings.get("ticket_category_id") else None
-        ticket_log = guild.get_channel(settings.get("ticket_log_channel_id")) if settings.get("ticket_log_channel_id") else None
-        role = guild.get_role(settings.get("support_role_id")) if settings.get("support_role_id") else None
-        auto_role = guild.get_role(settings.get("auto_role_id")) if settings.get("auto_role_id") else None
-
-        voice_hub = guild.get_channel(settings.get("voice_hub_channel_id")) if settings.get("voice_hub_channel_id") else None
-
-        level_up_ch = guild.get_channel(settings.get("level_up_channel_id")) if settings.get("level_up_channel_id") else None
-        level_roles_count = len(settings.get("level_roles", {}))
-        replace_mode = settings.get("level_roles_replace", True)
-        roles_mode_str = "Ранги (замена старых)" if replace_mode else "Накопительный"
-        active_giveaways_count = len(giveaways_manager.get_guild_giveaways(guild.id, active_only=True)) if giveaways_manager else 0
-        gw_role = guild.get_role(settings.get("giveaway_role_id")) if settings.get("giveaway_role_id") else None
-        gw_users_count = len(settings.get("giveaway_users", []))
-        gw_access_text = gw_role.mention if gw_role else "Только администраторы"
-        if gw_users_count > 0:
-            gw_access_text += f" (+{gw_users_count} участн.)"
+        bot_member = guild.me
+        issues_count = 0
 
         embed = discord.Embed(
-            title=f"📊 Настройки бота для {guild.name}",
-            color=discord.Color.blue(),
+            title=f"📋 Полная конфигурация сервера — {guild.name}",
+            description="Ниже отображен детальный статус всех систем бота, ролей и проверка на сбои:\n",
+            color=discord.Color.blurple(),
             timestamp=discord.utils.utcnow()
         )
-        embed.add_field(name="Канал логов аудита", value=log_ch.mention if log_ch else "❌ Не настроен (/set-log-channel)", inline=False)
-        embed.add_field(name="Автовыдача роли (Autorole)", value=auto_role.mention if auto_role else "❌ Отключена (/set-autorole)", inline=True)
-        embed.add_field(name="Система уровней", value=f"✅ Активна (ролей: {level_roles_count}, {roles_mode_str})", inline=True)
-        embed.add_field(name="Канал оповещений уровней", value=level_up_ch.mention if level_up_ch else "По умолчанию (в текущий)", inline=True)
-        embed.add_field(name="Активных розыгрышей", value=str(active_giveaways_count), inline=True)
-        embed.add_field(name="Роль розыгрышей", value=gw_access_text, inline=True)
-        embed.add_field(name="Категория тикетов", value=ticket_cat.name if ticket_cat else "❌ Не настроена (/setup-tickets)", inline=True)
-        embed.add_field(name="Роль поддержки", value=role.mention if role else "Не указана", inline=True)
-        embed.add_field(name="Канал логов тикетов", value=ticket_log.mention if ticket_log else "По умолчанию (канал логов)", inline=True)
-        embed.add_field(name="Хаб создания войсов", value=voice_hub.mention if voice_hub else "❌ Не настроен (/setup-voice)", inline=True)
-        embed.add_field(name="Всего создано тикетов", value=str(settings.get("ticket_counter", 0)), inline=True)
-        embed.add_field(name="Пинг бота", value=f"{round(self.bot.latency * 1000)} мс", inline=True)
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
 
+        # 1. АУДИТ И ЛОГИРОВАНИЕ
+        log_cid = settings.get("log_channel_id")
+        if log_cid:
+            log_ch = guild.get_channel(log_cid)
+            if log_ch:
+                perms = log_ch.permissions_for(bot_member)
+                if perms.send_messages and perms.embed_links:
+                    log_status = f"✅ Активен: {log_ch.mention}"
+                else:
+                    issues_count += 1
+                    log_status = f"⚠️ {log_ch.mention} (У бота нет прав `Send Messages` / `Embed Links`!)"
+            else:
+                issues_count += 1
+                log_status = f"❌ Канал удален из Discord! (ID: `{log_cid}`) — настройте `/set-log-channel`"
+        else:
+            log_status = "⚪ Не настроен (`/set-log-channel`)"
+        embed.add_field(name="📜 Канал аудита логов", value=log_status, inline=False)
+
+        # 2. АВТОВЫДАЧА РОЛИ (AUTOROLE)
+        auto_rid = settings.get("auto_role_id")
+        if auto_rid:
+            auto_role = guild.get_role(auto_rid)
+            if auto_role:
+                if bot_member.top_role > auto_role:
+                    auto_status = f"✅ Активна: {auto_role.mention} *(выдается новым участникам)*"
+                else:
+                    issues_count += 1
+                    auto_status = f"⚠️ {auto_role.mention} — **Роль бота ниже этой роли!** Бот не сможет её выдать. Поднимите роль бота выше в настройках ролей."
+            else:
+                issues_count += 1
+                auto_status = f"❌ Роль была удалена из настроек Discord! (ID: `{auto_rid}`) — перенастройте `/set-autorole`"
+        else:
+            auto_status = "⚪ Отключена (`/set-autorole`)"
+        embed.add_field(name="🎭 Автовыдача роли новичкам", value=auto_status, inline=False)
+
+        # 3. СИСТЕМА УРОВНЕЙ И РАНГОВ
+        levels_enabled = settings.get("levels_enabled", True)
+        if levels_enabled:
+            lvl_ch_id = settings.get("level_up_channel_id")
+            if lvl_ch_id:
+                lvl_ch = guild.get_channel(lvl_ch_id)
+                lvl_ch_str = lvl_ch.mention if lvl_ch else f"❌ Удален (ID: `{lvl_ch_id}`)"
+            else:
+                lvl_ch_str = "Текущий канал последнего сообщения"
+
+            replace_mode = settings.get("level_roles_replace", True)
+            mode_label = "🔄 Ранги (замена старых ролей)" if replace_mode else "📚 Накопление всех ролей"
+
+            level_roles = settings.get("level_roles", {})
+            lvl_roles_lines = []
+            if level_roles:
+                sorted_tiers = sorted([(int(l), r) for l, r in level_roles.items() if str(l).isdigit()], key=lambda x: x[0])
+                for idx, (lvl, rid) in enumerate(sorted_tiers):
+                    role = guild.get_role(rid)
+                    if replace_mode:
+                        if idx + 1 < len(sorted_tiers):
+                            next_lvl = sorted_tiers[idx + 1][0]
+                            rng_txt = f"Уровни {lvl}–{next_lvl - 1}"
+                        else:
+                            rng_txt = f"Уровень {lvl}+"
+                    else:
+                        rng_txt = f"Уровень {lvl}"
+
+                    if role:
+                        if bot_member.top_role > role:
+                            lvl_roles_lines.append(f"  • ⭐ **{rng_txt}**: {role.mention} ✅")
+                        else:
+                            issues_count += 1
+                            lvl_roles_lines.append(f"  • ⭐ **{rng_txt}**: {role.mention} ⚠️ *(роль бота ниже!)*")
+                    else:
+                        issues_count += 1
+                        lvl_roles_lines.append(f"  • ⭐ **{rng_txt}**: ❌ `Удалена из Discord (ID: {rid})`")
+                roles_block = "\n".join(lvl_roles_lines)
+            else:
+                roles_block = "  *Роли за уровни еще не назначены (`/set-level-role`)*"
+
+            levels_text = (
+                f"✅ **Включена** • Режим: **{mode_label}**\n"
+                f"📍 Оповещения: {lvl_ch_str}\n"
+                f"🎖️ **Настроенные ранги:**\n{roles_block}"
+            )
+        else:
+            levels_text = "❌ Отключена"
+        embed.add_field(name="⭐ Система уровней и рангов", value=levels_text, inline=False)
+
+        # 4. РОЗЫГРЫШИ (GIVEAWAYS)
+        gw_rid = settings.get("giveaway_role_id")
+        gw_role = guild.get_role(gw_rid) if gw_rid else None
+        if gw_rid and not gw_role:
+            issues_count += 1
+            gw_role_str = f"❌ Роль удалена из Discord! (ID: `{gw_rid}`)"
+        elif gw_role:
+            gw_role_str = f"✅ {gw_role.mention}"
+        else:
+            gw_role_str = "Только администраторы"
+
+        gw_users = settings.get("giveaway_users", [])
+        gw_users_str = ", ".join(f"<@{uid}>" for uid in gw_users) if gw_users else "Нет"
+        active_gw_count = len(giveaways_manager.get_guild_giveaways(guild.id, active_only=True)) if giveaways_manager else 0
+
+        gw_text = (
+            f"👑 Ведущие розыгрышей: {gw_role_str}\n"
+            f"👤 Персональный доступ: {gw_users_str}\n"
+            f"🎁 Активных розыгрышей сейчас: **{active_gw_count}** (`/glist`)"
+        )
+        embed.add_field(name="🎁 Управление розыгрышами", value=gw_text, inline=False)
+
+        # 5. ТИКЕТЫ И ДИНАМИЧЕСКИЕ ВОЙСЫ
+        ticket_cat_id = settings.get("ticket_category_id")
+        ticket_cat = guild.get_channel(ticket_cat_id) if ticket_cat_id else None
+        t_cat_str = ticket_cat.name if ticket_cat else ("❌ Удалена" if ticket_cat_id else "⚪ Не настроена")
+
+        t_role_id = settings.get("support_role_id")
+        t_role = guild.get_role(t_role_id) if t_role_id else None
+        t_role_str = t_role.mention if t_role else ("❌ Удалена" if t_role_id else "Администраторы")
+
+        t_log_id = settings.get("ticket_log_channel_id")
+        t_log = guild.get_channel(t_log_id) if t_log_id else None
+        t_log_str = t_log.mention if t_log else "Канал аудита"
+
+        voice_hub_id = settings.get("voice_hub_channel_id")
+        voice_hub = guild.get_channel(voice_hub_id) if voice_hub_id else None
+        v_hub_str = voice_hub.mention if voice_hub else ("❌ Удален" if voice_hub_id else "⚪ Не настроен")
+
+        systems_text = (
+            f"🎫 **Тикеты:** Категория: `{t_cat_str}` | Поддержка: {t_role_str} | Логи: {t_log_str} | Создано: **{settings.get('ticket_counter', 0)}**\n"
+            f"🔊 **Войсы:** Хаб «Создать канал»: {v_hub_str}"
+        )
+        embed.add_field(name="🛠️ Тикеты и Голосовые каналы", value=systems_text, inline=False)
+
+        # 6. АУДИТ БЕЗОПАСНОСТИ СЕРВЕРА (@everyone)
+        sec_warnings = []
+        ev_perms = guild.default_role.permissions
+        if ev_perms.manage_webhooks:
+            issues_count += 1
+            sec_warnings.append("🚨 **У роли @everyone включено право 'Управлять вебхуками'!** (Любой новичок может создать спам-вебхук!)")
+        if getattr(ev_perms, "use_external_apps", False):
+            issues_count += 1
+            sec_warnings.append("🚨 **У роли @everyone включено право 'Использовать внешние приложения'!** (Риск спама через User-Apps)")
+        if ev_perms.mention_everyone:
+            issues_count += 1
+            sec_warnings.append("⚠️ **У роли @everyone включено 'Упоминание @everyone/@here'!** (Риск массового пинга)")
+        if ev_perms.administrator:
+            issues_count += 1
+            sec_warnings.append("🚨 **КРИТИЧЕСКИ: У роли @everyone включены права Администратора!**")
+
+        if sec_warnings:
+            sec_text = "\n".join(sec_warnings) + "\n\n💡 *Отключите эти права в Настройки сервера ➔ Роли ➔ @everyone ➔ Права.*"
+            embed.add_field(name="🛡️ Проверка безопасности (Внимание!)", value=sec_text, inline=False)
+        else:
+            embed.add_field(
+                name="🛡️ Проверка безопасности",
+                value="✅ **Все ключевые уязвимости закрыты.** У роли @everyone нет доступа к вебхукам, внешним приложениям и пингам.",
+                inline=False
+            )
+
+        # Итоги проверки
+        ping_ms = round(self.bot.latency * 1000)
+        if issues_count == 0:
+            status_summary = f"🟢 **Все системы работают штатно, сбоев не обнаружено!** (Пинг: `{ping_ms} мс`)"
+        else:
+            status_summary = f"🟡 **Обнаружено предупреждений / несоответствий: {issues_count}** (см. ⚠️ и ❌ выше) | Пинг: `{ping_ms} мс`"
+
+        embed.set_footer(text=f"{status_summary} • antugravity bot")
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(
@@ -617,11 +864,18 @@ class AdminCommands(commands.Cog):
             inline=False
         )
         embed.add_field(
+            name="🧹 Модерация и быстрая чистка чата",
+            value=(
+                "`/clear [amount] [user] [only_bots] [contains]` — быстрая очистка чата от 1 до 100 сообщений (с фильтром ботов/спама)"
+            ),
+            inline=False
+        )
+        embed.add_field(
             name="📜 Логи сервера и аудит",
             value=(
                 "`/set-log-channel` — установить канал аудита сервера\n"
                 "`/test-log` — проверить отправку логов в канал\n"
-                "`/bot-status` — посмотреть текущую конфигурацию сервера\n"
+                "`/server-config` (или `/bot-status`) — **полная диагностика всех настроек сервера, ролей, каналов и уязвимостей**\n"
                 "`!sync` — принудительно обновить слэш-команды в чате"
             ),
             inline=False
