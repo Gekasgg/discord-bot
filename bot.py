@@ -75,14 +75,14 @@ class DiscordBot(commands.Bot):
         logger.info(f"Подключен к {len(self.guilds)} серверам.")
         logger.info("=" * 50)
 
-        # Очистка локальных дубликатов команд на серверах
+        # Мгновенная регистрация и синхронизация слэш-команд на серверах
         for guild in self.guilds:
             try:
-                self.tree.clear_commands(guild=guild)
-                await self.tree.sync(guild=guild)
-                logger.info(f"🧹 Очищены локальные дубликаты команд на сервере '{guild.name}' (ID: {guild.id})")
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                logger.info(f"✅ Мгновенно синхронизировано {len(synced)} слэш-команд на сервере '{guild.name}' (ID: {guild.id})")
             except Exception as e:
-                logger.error(f"Не удалось очистить дубликаты для {guild.name}: {e}")
+                logger.error(f"Не удалось синхронизировать команды для {guild.name}: {e}")
 
         # Установка статуса активности
         activity = discord.Activity(
@@ -98,18 +98,19 @@ bot = DiscordBot()
 @bot.command(name="sync")
 @commands.has_permissions(administrator=True)
 async def manual_sync(ctx: commands.Context):
-    """Синхронизация команд вручную с удалением дубликатов через !sync"""
-    msg = await ctx.send("🔄 Удаляю дубликаты и синхронизирую слэш-команды...")
+    """Мгновенная синхронизация команд на сервере через !sync"""
+    msg = await ctx.send("🔄 Мгновенно обновляю и регистрирую слэш-команды на сервере...")
     try:
-        # Очищаем команды гильдии, чтобы они не двоились с глобальными
-        bot.tree.clear_commands(guild=ctx.guild)
-        await bot.tree.sync(guild=ctx.guild)
-        # Синхронизируем глобальные команды
-        synced = await bot.tree.sync()
+        # Копируем глобальные команды на текущий сервер для моментального появления в Discord
+        bot.tree.copy_global_to(guild=ctx.guild)
+        synced_guild = await bot.tree.sync(guild=ctx.guild)
+        # Также обновляем глобальные команды
+        synced_global = await bot.tree.sync()
+
         await msg.edit(content=(
-            f"✅ **Дубликаты успешно удалены!**\n"
-            f"Синхронизировано **{len(synced)}** глобальных слэш-команд.\n\n"
-            f"💡 *Если в списке команд они всё ещё отображаются дважды из-за кэша клиента, перезагрузите Discord нажатием `Ctrl + R`.*"
+            f"✅ **Все слэш-команды успешно и мгновенно зарегистрированы!**\n\n"
+            f"📊 На сервере доступно: **{len(synced_guild)}** команд (включая `/clear` и `/server-config`).\n\n"
+            f"💡 *Если при вводе `/` они ещё не появились в списке из-за кэша Discord, нажмите `Ctrl + R` (или перезапустите Discord), чтобы обновить интерфейс.*"
         ))
     except Exception as e:
         await msg.edit(content=f"❌ Ошибка синхронизации: {e}")
