@@ -9,7 +9,7 @@ logger = logging.getLogger("bot.logging")
 
 
 class ServerLogging(commands.Cog):
-    """Ког для комплексного логирования всех событий сервера."""
+    """Ког для комплексного логирования всех событий сервера в чистом элегантном стиле."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -17,15 +17,15 @@ class ServerLogging(commands.Cog):
     def format_channel_type(self, channel: discord.abc.GuildChannel) -> str:
         """Красивое форматирование типа канала."""
         if isinstance(channel, discord.TextChannel):
-            return "💬 Текстовый канал"
+            return "Текстовый канал"
         elif isinstance(channel, discord.VoiceChannel):
-            return "🔊 Голосовой канал"
+            return "Голосовой канал"
         elif isinstance(channel, discord.CategoryChannel):
-            return "📁 Категория"
+            return "Категория"
         elif isinstance(channel, discord.StageChannel):
-            return "🎭 Сцена"
+            return "Сцена"
         elif isinstance(channel, discord.ForumChannel):
-            return "📋 Форум"
+            return "Форум"
         return str(channel.type).capitalize()
 
     async def get_log_channel(self, guild: discord.Guild) -> discord.TextChannel | None:
@@ -63,16 +63,44 @@ class ServerLogging(commands.Cog):
 
         perms = channel.permissions_for(guild.me)
         if not perms.send_messages:
-            logger.warning(f"У бота нет прав на отправку сообщений (Send Messages) в канале #{channel.name} на сервере '{guild.name}'")
+            logger.warning(f"У бота нет прав на отправку сообщений в канале #{channel.name} на сервере '{guild.name}'")
             return
         if not perms.embed_links:
-            logger.warning(f"У бота нет прав на прикрепление ссылок/эмбедов (Embed Links) в канале #{channel.name} на сервере '{guild.name}'")
+            logger.warning(f"У бота нет прав на встраивание ссылок (Embed Links) в канале #{channel.name} на сервере '{guild.name}'")
             return
 
         try:
             await channel.send(embed=embed)
         except Exception as e:
             logger.error(f"Не удалось отправить лог на сервере '{guild.name}': {e}", exc_info=True)
+
+    async def get_audit_moderator(
+        self,
+        guild: discord.Guild,
+        action: discord.AuditLogAction,
+        target_id: int,
+        fallback: str = "Неизвестно",
+        check_attr: str | None = None
+    ) -> str:
+        """Определяет модератора или автора действия через Audit Log с фильтрацией по времени."""
+        if not guild.me or not guild.me.guild_permissions.view_audit_log:
+            return fallback
+
+        await asyncio.sleep(0.5)
+        try:
+            async for entry in guild.audit_logs(limit=5, action=action):
+                if entry.target and entry.target.id == target_id:
+                    if check_attr and hasattr(entry, 'after') and not hasattr(entry.after, check_attr):
+                        continue
+                    diff = (discord.utils.utcnow() - entry.created_at).total_seconds()
+                    if diff < 15:
+                        if entry.user:
+                            return entry.user.display_name
+                        break
+        except Exception as e:
+            logger.debug(f"Ошибка при запросе Audit Log ({action}): {e}")
+
+        return fallback
 
     # ==========================================
     # 1. СООБЩЕНИЯ
@@ -84,13 +112,12 @@ class ServerLogging(commands.Cog):
             return
 
         embed = discord.Embed(
-            title="🗑️ Сообщение удалено",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
+            title="Удаление сообщения",
+            color=discord.Color.red()
         )
-        embed.set_author(name=f"{message.author} ({message.author.id})", icon_url=message.author.display_avatar.url)
+        embed.set_thumbnail(url=message.author.display_avatar.url)
+        embed.add_field(name="Пользователь", value=message.author.mention, inline=False)
         embed.add_field(name="Канал", value=message.channel.mention, inline=True)
-        embed.add_field(name="Автор", value=message.author.mention, inline=True)
 
         content = message.content or "*[Пустое сообщение или вложения]*"
         if len(content) > 1000:
@@ -101,19 +128,17 @@ class ServerLogging(commands.Cog):
             att_names = "\n".join([f"📎 [{att.filename}]({att.url})" for att in message.attachments])
             embed.add_field(name="Вложения", value=att_names[:1000], inline=False)
 
-        # Проверка, не удалил ли сообщение модератор
-        if message.guild.me.guild_permissions.view_audit_log:
-            await asyncio.sleep(0.5)
-            try:
-                async for entry in message.guild.audit_logs(limit=3, action=discord.AuditLogAction.message_delete):
-                    if entry.target and entry.target.id == message.author.id:
-                        if entry.user and entry.user.id != message.author.id:
-                            embed.add_field(name="👤 Удалил модератор", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                        break
-            except Exception:
-                pass
+        mod_name = await self.get_audit_moderator(
+            guild=message.guild,
+            action=discord.AuditLogAction.message_delete,
+            target_id=message.author.id,
+            fallback=None
+        )
+        if mod_name and mod_name != message.author.display_name:
+            embed.set_footer(text=f"Удалил: {mod_name}")
+        else:
+            embed.set_footer(text=f"ID сообщения: {message.id}")
 
-        embed.set_footer(text=f"ID сообщения: {message.id}")
         await self.send_log(message.guild, embed)
 
     @commands.Cog.listener()
@@ -124,13 +149,13 @@ class ServerLogging(commands.Cog):
             return
 
         embed = discord.Embed(
-            title="✏️ Сообщение отредактировано",
-            color=discord.Color.gold(),
-            timestamp=discord.utils.utcnow()
+            title="Редактирование сообщения",
+            color=discord.Color.gold()
         )
-        embed.set_author(name=f"{before.author} ({before.author.id})", icon_url=before.author.display_avatar.url)
+        embed.set_thumbnail(url=before.author.display_avatar.url)
+        embed.add_field(name="Пользователь", value=before.author.mention, inline=False)
         embed.add_field(name="Канал", value=before.channel.mention, inline=True)
-        embed.add_field(name="Перейти к сообщению", value=f"[Клик]({after.jump_url})", inline=True)
+        embed.add_field(name="Сообщение", value=f"[Перейти к сообщению]({after.jump_url})", inline=True)
 
         before_text = before.content or "*[Пусто]*"
         after_text = after.content or "*[Пусто]*"
@@ -140,13 +165,13 @@ class ServerLogging(commands.Cog):
         if len(after_text) > 900:
             after_text = after_text[:900] + "..."
 
-        embed.add_field(name="До изменения", value=before_text, inline=False)
-        embed.add_field(name="После изменения", value=after_text, inline=False)
+        embed.add_field(name="До", value=before_text, inline=True)
+        embed.add_field(name="После", value=after_text, inline=True)
         embed.set_footer(text=f"ID сообщения: {before.id}")
         await self.send_log(before.guild, embed)
 
     # ==========================================
-    # 2. УЧАСТНИКИ
+    # 2. УЧАСТНИКИ (ВХОД, ВЫХОД, РОЛИ, НИКНЕЙМ)
     # ==========================================
 
     @commands.Cog.listener()
@@ -159,47 +184,35 @@ class ServerLogging(commands.Cog):
             # 1. Автоматическая выдача роли при входе (Autorole)
             autorole_id = settings.get("auto_role_id")
             given_role = None
-            autorole_error = None
             if autorole_id:
                 role = guild.get_role(autorole_id)
                 if role:
                     try:
                         await member.add_roles(role, reason="Автовыдача роли при входе на сервер (Autorole)")
                         given_role = role
-                    except discord.Forbidden:
-                        autorole_error = "Недостаточно прав бота (роль бота ниже выдаваемой роли)"
                     except Exception as e:
-                        autorole_error = str(e)
+                        logger.warning(f"Не удалось выдать автороль участнику {member}: {e}")
 
             # 2. Формирование лога входа на сервер
             embed = discord.Embed(
-                title="📥 Участник зашел на сервер",
-                color=discord.Color.green(),
-                timestamp=discord.utils.utcnow()
+                title="Вход на сервер",
+                color=discord.Color.green()
             )
-            embed.set_author(name=f"{member} (ID: {member.id})", icon_url=member.display_avatar.url)
             embed.set_thumbnail(url=member.display_avatar.url)
-
+            embed.add_field(name="Пользователь", value=member.mention, inline=False)
             embed.add_field(
-                name="👤 Пользователь",
-                value=f"{member.mention} — `{member.name}`\n**ID:** `{member.id}`",
-                inline=False
-            )
-            embed.add_field(
-                name="📅 Аккаунт создан",
+                name="Аккаунт создан",
                 value=f"<t:{int(member.created_at.timestamp())}:F>\n(<t:{int(member.created_at.timestamp())}:R>)",
                 inline=True
             )
             embed.add_field(
-                name="👥 Всего участников",
+                name="Всего участников",
                 value=f"**{guild.member_count}**",
                 inline=True
             )
 
             if given_role:
-                embed.add_field(name="🎭 Автовыдача роли", value=f"Успешно выдана роль {given_role.mention}", inline=False)
-            elif autorole_error:
-                embed.add_field(name="⚠️ Автовыдача роли", value=f"Не удалось выдать роль: {autorole_error}", inline=False)
+                embed.add_field(name="Выдана роль", value=given_role.mention, inline=False)
 
             embed.set_footer(text=f"Сервер: {guild.name}")
             await self.send_log(guild, embed)
@@ -218,64 +231,46 @@ class ServerLogging(commands.Cog):
 
             user = payload.user
             member_id = user.id
-            user_name = str(user)
             avatar_url = user.display_avatar.url
-            logger.info(f"📤 Участник {user_name} ({member_id}) покинул сервер '{guild.name}'")
-
-            embed = discord.Embed(
-                title="📤 Участник покинул сервер",
-                color=discord.Color.dark_red(),
-                timestamp=discord.utils.utcnow()
-            )
-            embed.set_author(name=f"{user_name} (ID: {member_id})", icon_url=avatar_url)
-            embed.set_thumbnail(url=avatar_url)
-
-            embed.add_field(
-                name="👤 Пользователь",
-                value=f"<@{member_id}> — `{user.name}`\n**ID:** `{member_id}`",
-                inline=False
-            )
-
-            if isinstance(user, discord.Member):
-                if user.joined_at:
-                    embed.add_field(
-                        name="⏱️ Был на сервере с",
-                        value=f"<t:{int(user.joined_at.timestamp())}:F>\n(<t:{int(user.joined_at.timestamp())}:R>)",
-                        inline=True
-                    )
-                roles = [r.mention for r in user.roles if r.name != "@everyone"]
-                if roles:
-                    embed.add_field(name="🏷️ Были роли", value=", ".join(roles)[:1000], inline=False)
-            else:
-                if hasattr(user, 'created_at') and user.created_at:
-                    embed.add_field(
-                        name="📅 Аккаунт создан",
-                        value=f"<t:{int(user.created_at.timestamp())}:F>\n(<t:{int(user.created_at.timestamp())}:R>)",
-                        inline=True
-                    )
-
-            embed.add_field(
-                name="👥 Осталось участников",
-                value=f"**{guild.member_count}**",
-                inline=True
-            )
+            logger.info(f"📤 Участник {user} ({member_id}) покинул сервер '{guild.name}'")
 
             # Проверка, не был ли участник кикнут модератором
+            kick_entry = None
             if guild.me and guild.me.guild_permissions.view_audit_log:
                 await asyncio.sleep(0.5)
                 try:
                     async for entry in guild.audit_logs(limit=3, action=discord.AuditLogAction.kick):
                         if entry.target and entry.target.id == member_id:
-                            embed.title = "👢 Участник исключен (Кик)"
-                            embed.color = discord.Color.orange()
-                            embed.add_field(name="👮 Модератор", value=f"{entry.user.mention} (`{entry.user}`)", inline=True)
-                            if entry.reason:
-                                embed.add_field(name="Причина", value=entry.reason, inline=True)
-                            break
+                            diff = (discord.utils.utcnow() - entry.created_at).total_seconds()
+                            if diff < 15:
+                                kick_entry = entry
+                                break
                 except Exception:
                     pass
 
-            embed.set_footer(text=f"Сервер: {guild.name}")
+            if kick_entry:
+                embed = discord.Embed(
+                    title="Исключение (Кик)",
+                    color=discord.Color.orange()
+                )
+                embed.set_thumbnail(url=avatar_url)
+                embed.add_field(name="Пользователь", value=f"<@{member_id}>", inline=False)
+                embed.add_field(name="Осталось участников", value=f"**{guild.member_count}**", inline=True)
+                mod_name = kick_entry.user.display_name if kick_entry.user else str(kick_entry.user)
+                footer_text = f"Исключил: {mod_name}"
+                if kick_entry.reason:
+                    footer_text += f" | Причина: {kick_entry.reason}"
+                embed.set_footer(text=footer_text)
+            else:
+                embed = discord.Embed(
+                    title="Выход с сервера",
+                    color=discord.Color.red()
+                )
+                embed.set_thumbnail(url=avatar_url)
+                embed.add_field(name="Пользователь", value=f"<@{member_id}>", inline=False)
+                embed.add_field(name="Осталось участников", value=f"**{guild.member_count}**", inline=True)
+                embed.set_footer(text=f"Сервер: {guild.name}")
+
             await self.send_log(guild, embed)
         except Exception as e:
             logger.error(f"Ошибка при обработке выхода участника: {e}", exc_info=True)
@@ -285,88 +280,86 @@ class ServerLogging(commands.Cog):
         guild = before.guild
         embeds_to_send = []
 
-        # 1. Смена никнейма
+        # 1. Смена никнейма (Точно в стиле скриншота)
         if before.nick != after.nick:
-            embed = discord.Embed(
-                title="📝 Изменение никнейма",
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
+            mod_name = await self.get_audit_moderator(
+                guild=guild,
+                action=discord.AuditLogAction.member_update,
+                target_id=after.id,
+                fallback=after.display_name,
+                check_attr="nick"
             )
-            embed.set_author(name=f"{after} ({after.id})", icon_url=after.display_avatar.url)
-            embed.add_field(name="Участник", value=after.mention, inline=False)
-            embed.add_field(name="Старый ник", value=before.nick or before.name, inline=True)
-            embed.add_field(name="Новый ник", value=after.nick or after.name, inline=True)
-
-            if guild.me.guild_permissions.view_audit_log:
-                await asyncio.sleep(0.5)
-                try:
-                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                        if entry.target and entry.target.id == after.id and hasattr(entry.after, 'nick'):
-                            embed.add_field(name="👤 Изменил", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                            break
-                except Exception:
-                    pass
-
+            embed = discord.Embed(
+                title="Смена никнейма",
+                color=discord.Color.blue()
+            )
+            embed.set_thumbnail(url=after.display_avatar.url)
+            embed.add_field(name="Пользователь", value=after.mention, inline=False)
+            embed.add_field(name="До", value=before.nick or before.name, inline=True)
+            embed.add_field(name="После", value=after.nick or after.name, inline=True)
+            embed.set_footer(text=f"Изменил: {mod_name}")
             embeds_to_send.append(embed)
 
-        # 2. Смена ролей (выдача / снятие)
+        # 2. Смена ролей: добавление и удаление отдельными карточками (В стиле скриншота)
         if before.roles != after.roles:
             added = [r for r in after.roles if r not in before.roles]
             removed = [r for r in before.roles if r not in after.roles]
 
             if added or removed:
-                embed = discord.Embed(
-                    title="🛡️ Изменение ролей участника",
-                    color=discord.Color.purple(),
-                    timestamp=discord.utils.utcnow()
+                mod_name = await self.get_audit_moderator(
+                    guild=guild,
+                    action=discord.AuditLogAction.member_role_update,
+                    target_id=after.id,
+                    fallback=guild.me.display_name
                 )
-                embed.set_author(name=f"{after} ({after.id})", icon_url=after.display_avatar.url)
-                embed.add_field(name="Участник", value=f"{after.mention} ({after})", inline=False)
+
                 if added:
-                    embed.add_field(name="➕ Выданы роли", value=", ".join([r.mention for r in added]), inline=False)
+                    embed_add = discord.Embed(
+                        title="Изменение ролей",
+                        color=discord.Color.orange()
+                    )
+                    embed_add.set_thumbnail(url=after.display_avatar.url)
+                    embed_add.add_field(name="Пользователь", value=after.mention, inline=False)
+                    embed_add.add_field(name="Добавлены роли", value=", ".join(r.mention for r in added), inline=False)
+                    embed_add.set_footer(text=f"Изменил: {mod_name}")
+                    embeds_to_send.append(embed_add)
+
                 if removed:
-                    embed.add_field(name="➖ Сняты роли", value=", ".join([r.mention for r in removed]), inline=False)
-
-                # Поиск того, кто выдал или снял роли (через Audit Log)
-                if guild.me.guild_permissions.view_audit_log:
-                    await asyncio.sleep(0.5)
-                    try:
-                        async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_role_update):
-                            if entry.target and entry.target.id == after.id:
-                                embed.add_field(name="👤 Выдал / Снял", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                                if entry.reason:
-                                    embed.add_field(name="Причина", value=entry.reason, inline=False)
-                                break
-                    except Exception:
-                        pass
-
-                embeds_to_send.append(embed)
+                    embed_rem = discord.Embed(
+                        title="Изменение ролей",
+                        color=discord.Color.orange()
+                    )
+                    embed_rem.set_thumbnail(url=after.display_avatar.url)
+                    embed_rem.add_field(name="Пользователь", value=after.mention, inline=False)
+                    embed_rem.add_field(name="Удалены роли", value=", ".join(r.mention for r in removed), inline=False)
+                    embed_rem.set_footer(text=f"Изменил: {mod_name}")
+                    embeds_to_send.append(embed_rem)
 
         # 3. Тайм-аут (мут)
         if before.timed_out_until != after.timed_out_until:
-            embed = discord.Embed(
-                title="⏳ Изменение таймаута",
-                color=discord.Color.orange(),
-                timestamp=discord.utils.utcnow()
+            mod_name = await self.get_audit_moderator(
+                guild=guild,
+                action=discord.AuditLogAction.member_update,
+                target_id=after.id,
+                fallback="Модератор",
+                check_attr="timed_out_until"
             )
-            embed.set_author(name=f"{after} ({after.id})", icon_url=after.display_avatar.url)
-            if after.timed_out_until:
-                embed.description = f"Участник {after.mention} отправлен в таймаут до <t:{int(after.timed_out_until.timestamp())}:F> (<t:{int(after.timed_out_until.timestamp())}:R>)"
+            is_timeout = bool(after.timed_out_until)
+            embed = discord.Embed(
+                title="Тайм-аут",
+                color=discord.Color.orange() if is_timeout else discord.Color.green()
+            )
+            embed.set_thumbnail(url=after.display_avatar.url)
+            embed.add_field(name="Пользователь", value=after.mention, inline=False)
+            if is_timeout:
+                embed.add_field(
+                    name="Действует до",
+                    value=f"<t:{int(after.timed_out_until.timestamp())}:F> (<t:{int(after.timed_out_until.timestamp())}:R>)",
+                    inline=False
+                )
             else:
-                embed.description = f"С участника {after.mention} снят таймаут."
-
-            if guild.me.guild_permissions.view_audit_log:
-                await asyncio.sleep(0.5)
-                try:
-                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.member_update):
-                        if entry.target and entry.target.id == after.id and hasattr(entry.after, 'timed_out_until'):
-                            embed.add_field(name="👤 Модератор", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                            if entry.reason:
-                                embed.add_field(name="Причина", value=entry.reason, inline=False)
-                            break
-                except Exception:
-                    pass
-
+                embed.add_field(name="Статус", value="Снят", inline=False)
+            embed.set_footer(text=f"Изменил: {mod_name}")
             embeds_to_send.append(embed)
 
         for emb in embeds_to_send:
@@ -378,46 +371,50 @@ class ServerLogging(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_ban(self, guild: discord.Guild, user: discord.User | discord.Member):
-        embed = discord.Embed(
-            title="🔨 Участник заблокирован (Бан)",
-            color=discord.Color.dark_red(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="Пользователь", value=f"{user} ({user.id})", inline=False)
-
-        # Попытка получить причину и автора бана из Audit Log
+        mod_name = "Модератор"
+        reason = None
         if guild.me.guild_permissions.view_audit_log:
             try:
-                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.ban):
+                async for entry in guild.audit_logs(limit=2, action=discord.AuditLogAction.ban):
                     if entry.target and entry.target.id == user.id:
-                        embed.add_field(name="Модератор", value=f"{entry.user.mention} ({entry.user})", inline=True)
-                        embed.add_field(name="Причина", value=entry.reason or "Не указана", inline=True)
+                        if entry.user:
+                            mod_name = entry.user.display_name
+                        reason = entry.reason
                         break
             except Exception:
                 pass
 
+        embed = discord.Embed(
+            title="Блокировка участника",
+            color=discord.Color.dark_red()
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="Пользователь", value=f"{user.mention} (`{user}`)", inline=False)
+        if reason:
+            embed.add_field(name="Причина", value=reason, inline=False)
+        embed.set_footer(text=f"Заблокировал: {mod_name}")
         await self.send_log(guild, embed)
 
     @commands.Cog.listener()
     async def on_member_unban(self, guild: discord.Guild, user: discord.User):
-        embed = discord.Embed(
-            title="🔓 Участник разблокирован (Разбан)",
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow()
-        )
-        embed.set_thumbnail(url=user.display_avatar.url)
-        embed.add_field(name="Пользователь", value=f"{user} ({user.id})", inline=False)
-
+        mod_name = "Модератор"
         if guild.me.guild_permissions.view_audit_log:
             try:
-                async for entry in guild.audit_logs(limit=1, action=discord.AuditLogAction.unban):
+                async for entry in guild.audit_logs(limit=2, action=discord.AuditLogAction.unban):
                     if entry.target and entry.target.id == user.id:
-                        embed.add_field(name="Модератор", value=f"{entry.user.mention} ({entry.user})", inline=True)
+                        if entry.user:
+                            mod_name = entry.user.display_name
                         break
             except Exception:
                 pass
 
+        embed = discord.Embed(
+            title="Разблокировка участника",
+            color=discord.Color.green()
+        )
+        embed.set_thumbnail(url=user.display_avatar.url)
+        embed.add_field(name="Пользователь", value=f"{user.mention} (`{user}`)", inline=False)
+        embed.set_footer(text=f"Разблокировал: {mod_name}")
         await self.send_log(guild, embed)
 
     # ==========================================
@@ -435,33 +432,36 @@ class ServerLogging(commands.Cog):
         if before.channel is None and after.channel is not None:
             # Зашел в голосовой
             embed = discord.Embed(
-                title="🔊 Подключение к голосовому каналу",
-                color=discord.Color.teal(),
-                timestamp=discord.utils.utcnow()
+                title="Подключение к голосовому каналу",
+                color=discord.Color.teal()
             )
-            embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="Пользователь", value=member.mention, inline=False)
             embed.add_field(name="Канал", value=f"🔊 {after.channel.name} ({after.channel.mention})", inline=False)
+            embed.set_footer(text=f"Сервер: {guild.name}")
 
         elif before.channel is not None and after.channel is None:
             # Вышел из голосового
             embed = discord.Embed(
-                title="🔇 Отключение от голосового канала",
-                color=discord.Color.light_grey(),
-                timestamp=discord.utils.utcnow()
+                title="Отключение от голосового канала",
+                color=discord.Color.light_grey()
             )
-            embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="Пользователь", value=member.mention, inline=False)
             embed.add_field(name="Был в канале", value=f"🔊 {before.channel.name}", inline=False)
+            embed.set_footer(text=f"Сервер: {guild.name}")
 
         elif before.channel != after.channel:
             # Переместился между каналами
             embed = discord.Embed(
-                title="🔀 Перемещение между голосовыми каналами",
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
+                title="Перемещение между голосовыми каналами",
+                color=discord.Color.blue()
             )
-            embed.set_author(name=f"{member} ({member.id})", icon_url=member.display_avatar.url)
+            embed.set_thumbnail(url=member.display_avatar.url)
+            embed.add_field(name="Пользователь", value=member.mention, inline=False)
             embed.add_field(name="Из канала", value=f"🔊 {before.channel.name}", inline=True)
             embed.add_field(name="В канал", value=f"🔊 {after.channel.name} ({after.channel.mention})", inline=True)
+            embed.set_footer(text=f"Сервер: {guild.name}")
 
         if embed:
             await self.send_log(guild, embed)
@@ -474,58 +474,48 @@ class ServerLogging(commands.Cog):
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         guild = channel.guild
         embed = discord.Embed(
-            title="📁 Канал создан",
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow()
+            title="Создание канала",
+            color=discord.Color.green()
         )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
         embed.add_field(name="Название", value=f"{channel.name} ({channel.mention})", inline=False)
         embed.add_field(name="Тип", value=self.format_channel_type(channel), inline=True)
         if channel.category:
             embed.add_field(name="Категория", value=channel.category.name, inline=True)
 
-        # Определение автора создания через Audit Log
-        if guild.me.guild_permissions.view_audit_log:
-            await asyncio.sleep(0.6)
-            try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_create):
-                    if entry.target and entry.target.id == channel.id:
-                        embed.add_field(name="👤 Создал", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                        if entry.reason:
-                            embed.add_field(name="Причина / Назначение", value=entry.reason, inline=False)
-                        break
-            except Exception:
-                pass
-
-        embed.set_footer(text=f"ID канала: {channel.id}")
+        mod_name = await self.get_audit_moderator(
+            guild=guild,
+            action=discord.AuditLogAction.channel_create,
+            target_id=channel.id,
+            fallback="Модератор"
+        )
+        embed.set_footer(text=f"Создал: {mod_name}")
         await self.send_log(guild, embed)
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         guild = channel.guild
         embed = discord.Embed(
-            title="🗑️ Канал удален",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
+            title="Удаление канала",
+            color=discord.Color.red()
         )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
         embed.add_field(name="Название", value=f"#{channel.name}", inline=False)
         embed.add_field(name="Тип", value=self.format_channel_type(channel), inline=True)
         if channel.category:
             embed.add_field(name="Была категория", value=channel.category.name, inline=True)
 
-        # Определение того, кто удалил канал через Audit Log
-        if guild.me.guild_permissions.view_audit_log:
-            await asyncio.sleep(0.6)
-            try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_delete):
-                    if entry.target and entry.target.id == channel.id:
-                        embed.add_field(name="👤 Удалил", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                        if entry.reason:
-                            embed.add_field(name="Причина", value=entry.reason, inline=False)
-                        break
-            except Exception:
-                pass
-
-        embed.set_footer(text=f"ID канала: {channel.id}")
+        mod_name = await self.get_audit_moderator(
+            guild=guild,
+            action=discord.AuditLogAction.channel_delete,
+            target_id=channel.id,
+            fallback="Модератор"
+        )
+        embed.set_footer(text=f"Удалил: {mod_name}")
         await self.send_log(guild, embed)
 
     @commands.Cog.listener()
@@ -548,25 +538,23 @@ class ServerLogging(commands.Cog):
 
         if changes:
             embed = discord.Embed(
-                title="⚙️ Канал обновлен",
+                title="Обновление канала",
                 description="\n".join(changes),
-                color=discord.Color.blue(),
-                timestamp=discord.utils.utcnow()
+                color=discord.Color.blue()
             )
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+
             embed.add_field(name="Канал", value=after.mention, inline=False)
             embed.add_field(name="Тип", value=self.format_channel_type(after), inline=True)
 
-            if guild.me.guild_permissions.view_audit_log:
-                await asyncio.sleep(0.6)
-                try:
-                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_update):
-                        if entry.target and entry.target.id == after.id:
-                            embed.add_field(name="👤 Изменил", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                            break
-                except Exception:
-                    pass
-
-            embed.set_footer(text=f"ID канала: {after.id}")
+            mod_name = await self.get_audit_moderator(
+                guild=guild,
+                action=discord.AuditLogAction.channel_update,
+                target_id=after.id,
+                fallback="Модератор"
+            )
+            embed.set_footer(text=f"Изменил: {mod_name}")
             await self.send_log(guild, embed)
 
     # ==========================================
@@ -577,46 +565,42 @@ class ServerLogging(commands.Cog):
     async def on_guild_role_create(self, role: discord.Role):
         guild = role.guild
         embed = discord.Embed(
-            title="🏷️ Роль создана",
-            color=discord.Color.green(),
-            timestamp=discord.utils.utcnow()
+            title="Создание роли",
+            color=discord.Color.green()
         )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
         embed.add_field(name="Роль", value=f"{role.mention} ({role.name})", inline=False)
 
-        if guild.me.guild_permissions.view_audit_log:
-            await asyncio.sleep(0.6)
-            try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.role_create):
-                    if entry.target and entry.target.id == role.id:
-                        embed.add_field(name="👤 Создал", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                        break
-            except Exception:
-                pass
-
-        embed.set_footer(text=f"ID роли: {role.id}")
+        mod_name = await self.get_audit_moderator(
+            guild=guild,
+            action=discord.AuditLogAction.role_create,
+            target_id=role.id,
+            fallback="Модератор"
+        )
+        embed.set_footer(text=f"Создал: {mod_name}")
         await self.send_log(guild, embed)
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role):
         guild = role.guild
         embed = discord.Embed(
-            title="🗑️ Роль удалена",
-            color=discord.Color.red(),
-            timestamp=discord.utils.utcnow()
+            title="Удаление роли",
+            color=discord.Color.red()
         )
+        if guild.icon:
+            embed.set_thumbnail(url=guild.icon.url)
+
         embed.add_field(name="Имя роли", value=role.name, inline=False)
 
-        if guild.me.guild_permissions.view_audit_log:
-            await asyncio.sleep(0.6)
-            try:
-                async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.role_delete):
-                    if entry.target and entry.target.id == role.id:
-                        embed.add_field(name="👤 Удалил", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                        break
-            except Exception:
-                pass
-
-        embed.set_footer(text=f"ID роли: {role.id}")
+        mod_name = await self.get_audit_moderator(
+            guild=guild,
+            action=discord.AuditLogAction.role_delete,
+            target_id=role.id,
+            fallback="Модератор"
+        )
+        embed.set_footer(text=f"Удалил: {mod_name}")
         await self.send_log(guild, embed)
 
     @commands.Cog.listener()
@@ -632,24 +616,22 @@ class ServerLogging(commands.Cog):
         if changes:
             guild = after.guild
             embed = discord.Embed(
-                title="✏️ Роль обновлена",
+                title="Обновление роли",
                 description="\n".join(changes),
-                color=discord.Color.gold(),
-                timestamp=discord.utils.utcnow()
+                color=discord.Color.gold()
             )
+            if guild.icon:
+                embed.set_thumbnail(url=guild.icon.url)
+
             embed.add_field(name="Роль", value=after.mention, inline=False)
 
-            if guild.me.guild_permissions.view_audit_log:
-                await asyncio.sleep(0.6)
-                try:
-                    async for entry in guild.audit_logs(limit=5, action=discord.AuditLogAction.role_update):
-                        if entry.target and entry.target.id == after.id:
-                            embed.add_field(name="👤 Изменил", value=f"{entry.user.mention} ({entry.user})", inline=False)
-                            break
-                except Exception:
-                    pass
-
-            embed.set_footer(text=f"ID роли: {after.id}")
+            mod_name = await self.get_audit_moderator(
+                guild=guild,
+                action=discord.AuditLogAction.role_update,
+                target_id=after.id,
+                fallback="Модератор"
+            )
+            embed.set_footer(text=f"Изменил: {mod_name}")
             await self.send_log(guild, embed)
 
 
