@@ -2,6 +2,7 @@ import asyncio
 import datetime
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -10,7 +11,6 @@ import stat
 import urllib.request
 from pathlib import Path
 
-import aiohttp
 from aiohttp import web
 import discord
 from discord import app_commands, ui
@@ -18,7 +18,7 @@ from discord.ext import commands
 
 from config import DATA_DIR, config_manager
 from cogs.tickets import TicketLauncherView
-from cogs.levels import levels_manager, calculate_level_from_xp
+from cogs.levels import levels_manager
 from cogs.giveaways import giveaways_manager, parse_duration, GiveawayJoinView, build_giveaway_embed
 
 logger = logging.getLogger("bot.dashboard")
@@ -27,18 +27,18 @@ SECRET_FILE = DATA_DIR / "dashboard_token.txt"
 
 
 def get_or_create_secret() -> str:
-    """Возвращает постоянный секретный ключ доступа к веб-панели."""
+    """Возвращает постоянный буквенно-цифровой ключ доступа к веб-панели."""
     env_secret = os.getenv("DASHBOARD_SECRET", "").strip()
     if env_secret:
         return env_secret
     if SECRET_FILE.exists():
         try:
             val = SECRET_FILE.read_text(encoding="utf-8").strip()
-            if len(val) >= 12:
+            if len(val) >= 12 and val.isalnum():
                 return val
         except Exception:
             pass
-    new_secret = secrets.token_urlsafe(18)
+    new_secret = secrets.token_hex(12)
     try:
         SECRET_FILE.write_text(new_secret, encoding="utf-8")
     except Exception:
@@ -76,7 +76,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     flex-direction: column;
   }
   header {
-    background: rgba(21, 28, 44, 0.9);
+    background: rgba(21, 28, 44, 0.95);
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--border);
     padding: 16px 28px;
@@ -97,7 +97,7 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     font-weight: 700;
   }
   .brand-badge {
-    background: var(--accent);
+    background: var(--success);
     color: #fff;
     padding: 4px 10px;
     border-radius: 8px;
@@ -194,6 +194,11 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
     gap: 16px;
   }
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 14px;
+  }
   .grid-4 {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
@@ -206,7 +211,23 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     padding: 16px;
   }
   .stat-box .label { color: var(--text-muted); font-size: 0.85rem; }
-  .stat-box .val { font-size: 1.5rem; font-weight: 700; margin-top: 4px; }
+  .stat-box .val { font-size: 1.45rem; font-weight: 700; margin-top: 4px; }
+  .summary-item {
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+  }
+  .summary-item .s-title {
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    margin-bottom: 4px;
+  }
+  .summary-item .s-val {
+    font-size: 0.96rem;
+    font-weight: 600;
+    color: #fff;
+  }
   .form-group {
     display: flex;
     flex-direction: column;
@@ -253,10 +274,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
   }
   .table th { color: var(--text-muted); font-weight: 600; }
   .badge {
-    padding: 4px 8px;
+    padding: 5px 10px;
     border-radius: 6px;
-    font-size: 0.8rem;
+    font-size: 0.82rem;
     font-weight: 600;
+    display: inline-block;
+    margin-right: 6px;
+    margin-bottom: 6px;
   }
   .badge-ok { background: rgba(34, 197, 94, 0.2); color: #4ade80; }
   .badge-warn { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
@@ -285,13 +309,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 
 <header>
   <div class="brand">
-    <span>🤖 Веб-Панель Управления Ботом</span>
-    <span class="brand-badge" id="bot-name-badge">Online</span>
+    <span>🤖 Панель Управления Сервером</span>
+    <span class="brand-badge" id="bot-name-badge">Подключен</span>
   </div>
   <div class="guild-selector">
     <span style="color:var(--text-muted);font-size:0.9rem;">Сервер:</span>
     <select id="guild-select" onchange="loadGuildData()" style="min-width:220px;"></select>
-    <button class="btn" onclick="loadGuildData()">🔄 Обновить</button>
+    <button class="btn" onclick="loadGuildData(true)">🔄 Обновить данные</button>
   </div>
 </header>
 
@@ -309,10 +333,16 @@ DASHBOARD_HTML = """<!DOCTYPE html>
     <!-- ВКЛАДКА 1: ОБЗОР И ЛОГИ -->
     <div id="tab-general" class="tab-pane active">
       <div class="grid-4">
-        <div class="stat-box"><div class="label">Участников</div><div class="val" id="st-members">-</div></div>
+        <div class="stat-box"><div class="label">Участников на сервере</div><div class="val" id="st-members">-</div></div>
         <div class="stat-box"><div class="label">Текстовых каналов</div><div class="val" id="st-channels">-</div></div>
         <div class="stat-box"><div class="label">Ролей на сервере</div><div class="val" id="st-roles">-</div></div>
         <div class="stat-box"><div class="label">Пинг бота</div><div class="val" id="st-ping">-</div></div>
+      </div>
+
+      <div class="card">
+        <h2>📋 Текущая сводка настроек вашего сервера</h2>
+        <p class="desc">Актуальные привязки каналов и ролей, которые сейчас установлены на сервере:</p>
+        <div class="grid-3" id="live-summary-grid"></div>
       </div>
 
       <div class="card">
@@ -595,10 +625,13 @@ DASHBOARD_HTML = """<!DOCTYPE html>
 <div id="toast">✅ Изменения сохранены!</div>
 
 <script>
+const SERVER_INJECTED_TOKEN = "__INJECTED_SECRET__";
+const INITIAL_BOOTSTRAP = __INITIAL_BOOTSTRAP_JSON__;
+
 const urlParams = new URLSearchParams(window.location.search);
-const TOKEN = urlParams.get('token') || localStorage.getItem(' dash_token') || '';
-if (urlParams.get('token')) {
-  localStorage.setItem('dash_token', urlParams.get('token'));
+const TOKEN = urlParams.get('token') || SERVER_INJECTED_TOKEN || localStorage.getItem('dash_token') || '';
+if (TOKEN) {
+  try { localStorage.setItem('dash_token', TOKEN); } catch (e) {}
 }
 
 let currentGuild = null;
@@ -624,8 +657,15 @@ async function apiCall(path, method='GET', body=null) {
     headers: { 'X-Auth-Token': TOKEN, 'Content-Type': 'application/json' }
   };
   if (body) opts.body = JSON.stringify(body);
-  const res = await fetch(path + '?token=' + encodeURIComponent(TOKEN), opts);
-  const data = await res.json();
+  const sep = path.includes('?') ? '&' : '?';
+  const res = await fetch(path + sep + 'token=' + encodeURIComponent(TOKEN) + '&_t=' + Date.now(), opts);
+  const text = await res.text();
+  let data = {};
+  try {
+    data = JSON.parse(text);
+  } catch (err) {
+    throw new Error('Ошибка ответа сервера (' + res.status + ')');
+  }
   if (!res.ok) throw new Error(data.error || 'Ошибка запроса');
   return data;
 }
@@ -640,24 +680,148 @@ function fillSelect(selectId, items, selectedVal, emptyLabel='— Не выбр�
     opt.textContent = emptyLabel;
     sel.appendChild(opt);
   }
-  items.forEach(item => {
+  const targetStr = selectedVal ? String(selectedVal) : '';
+  (items || []).forEach(item => {
     const opt = document.createElement('option');
     opt.value = String(item.id);
     opt.textContent = item.name;
-    if (String(selectedVal) === String(item.id)) opt.selected = true;
+    if (targetStr && targetStr === String(item.id)) {
+      opt.selected = true;
+    }
     sel.appendChild(opt);
   });
 }
 
+function findNameById(items, id, fallback='Не настроено') {
+  if (!id) return fallback;
+  const found = (items || []).find(x => String(x.id) === String(id));
+  return found ? found.name : ('Удалено (ID: ' + id + ')');
+}
+
+function renderGuildData(data) {
+  if (!data) return;
+  currentGuild = data;
+  const s = data.settings || {};
+
+  document.getElementById('st-members').textContent = data.member_count ?? '-';
+  document.getElementById('st-channels').textContent = (data.text_channels || []).length;
+  document.getElementById('st-roles').textContent = (data.roles || []).length;
+  document.getElementById('st-ping').textContent = (data.ping_ms ?? 0) + ' мс';
+
+  // Сводка текущих настроек
+  const summaryGrid = document.getElementById('live-summary-grid');
+  const summaryItems = [
+    { title: '📜 Канал логов аудита', val: findNameById(data.text_channels, s.log_channel_id) },
+    { title: '🎭 Автороль новичков', val: findNameById(data.roles, s.auto_role_id) },
+    { title: '⭐ Система уровней', val: (s.levels_enabled !== false ? 'Включена' : 'Выключена') + ' (' + (data.level_roles_view || []).length + ' рангов)' },
+    { title: '🎫 Категория тикетов', val: findNameById(data.categories, s.ticket_category_id) },
+    { title: '👮 Роль поддержки тикетов', val: findNameById(data.roles, s.support_role_id, 'Только админы') },
+    { title: '🔊 Голосовой хаб', val: findNameById(data.voice_channels, s.voice_hub_channel_id) }
+  ];
+  summaryGrid.innerHTML = summaryItems.map(item =>
+    `<div class="summary-item"><div class="s-title">${item.title}</div><div class="s-val">${item.val}</div></div>`
+  ).join('');
+
+  // Общие
+  fillSelect('cfg-log-channel', data.text_channels, s.log_channel_id);
+  fillSelect('cfg-auto-role', data.roles, s.auto_role_id);
+
+  // Статус безопасности
+  const secBox = document.getElementById('security-status-box');
+  let secHtml = '';
+  if (data.security && data.security.slash_ok) {
+    secHtml += '<span class="badge badge-ok">✅ Команды /rank и /ранг открыты для участников</span>';
+  } else {
+    secHtml += '<span class="badge badge-warn">⚠️ У @everyone выключено право команд приложений!</span>';
+  }
+  if (data.security && data.security.webhooks_safe) {
+    secHtml += '<span class="badge badge-ok">✅ Защита от спам-вебхуков активна</span>';
+  } else {
+    secHtml += '<span class="badge badge-warn">🚨 У @everyone включены вебхуки!</span>';
+  }
+  secBox.innerHTML = secHtml;
+
+  // Уровни
+  document.getElementById('cfg-levels-enabled').value = String(s.levels_enabled !== false);
+  fillSelect('cfg-level-channel', data.text_channels, s.level_up_channel_id, '💬 В текущем канале сообщения');
+  document.getElementById('cfg-level-replace').value = String(s.level_roles_replace !== false);
+  fillSelect('new-lvl-role', data.roles, '', '— Выберите роль —', false);
+  fillSelect('xp-member-select', data.members, '', '— Выберите участника —', false);
+
+  // Таблица ролей за уровни
+  const lrBody = document.querySelector('#level-roles-table tbody');
+  lrBody.innerHTML = '';
+  (data.level_roles_view || []).forEach(item => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td><b>${item.range_text}</b></td><td>${item.role_name}</td>
+      <td><button class="btn btn-danger" style="padding:5px 10px;font-size:0.8rem;" onclick="removeLevelRole('${item.level}')">Удалить</button></td>`;
+    lrBody.appendChild(tr);
+  });
+  if (!data.level_roles_view || data.level_roles_view.length === 0) {
+    lrBody.innerHTML = '<tr><td colspan="3" style="color:var(--text-muted);">Роли за уровни ещё не назначены</td></tr>';
+  }
+
+  // Таблица лидеров
+  const lbBody = document.querySelector('#leaderboard-table tbody');
+  lbBody.innerHTML = '';
+  (data.leaderboard || []).forEach((u, idx) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>#${idx+1}</td><td><b>${u.name}</b></td><td>⭐ ${u.level}</td><td>${u.xp} XP</td><td>${u.messages}</td><td>${u.voice}</td>`;
+    lbBody.appendChild(tr);
+  });
+  if (!data.leaderboard || data.leaderboard.length === 0) {
+    lbBody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);">Пока нет данных об активности</td></tr>';
+  }
+
+  // Тикеты
+  fillSelect('cfg-ticket-cat', data.categories, s.ticket_category_id);
+  fillSelect('cfg-ticket-role', data.roles, s.support_role_id, '— Только администраторы —');
+  fillSelect('cfg-ticket-log', data.text_channels, s.ticket_log_channel_id, '— Использовать основной канал логов —');
+  document.getElementById('cfg-t-modal-title').value = s.ticket_modal_title || '';
+  document.getElementById('cfg-t-f1-label').value = s.ticket_field1_label || '';
+  document.getElementById('cfg-t-f1-ph').value = s.ticket_field1_placeholder || '';
+  document.getElementById('cfg-t-f2-label').value = s.ticket_field2_label || '';
+  document.getElementById('cfg-t-f2-ph').value = s.ticket_field2_placeholder || '';
+  document.getElementById('cfg-t-w-title').value = s.ticket_welcome_title || '';
+  document.getElementById('cfg-t-w-text').value = s.ticket_welcome_text || '';
+  fillSelect('send-ticket-channel', data.text_channels, '', '— Выберите канал —', false);
+
+  // Войсы
+  fillSelect('cfg-voice-hub', data.voice_channels, s.voice_hub_channel_id);
+  fillSelect('cfg-voice-cat', data.categories, s.voice_category_id);
+
+  // Розыгрыши и Чистка
+  fillSelect('cfg-gw-role', data.roles, s.giveaway_role_id, '— Только администраторы —');
+  fillSelect('gw-channel', data.text_channels, '', '— Выберите канал —', false);
+  fillSelect('gw-req-role', data.roles, '', '— Без обязательной роли —');
+  fillSelect('purge-channel', data.text_channels, '', '— Выберите канал —', false);
+}
+
 async function initDashboard() {
   try {
+    if (INITIAL_BOOTSTRAP && INITIAL_BOOTSTRAP.guilds && INITIAL_BOOTSTRAP.guilds.length > 0) {
+      document.getElementById('bot-name-badge').textContent = INITIAL_BOOTSTRAP.bot_name || 'Online';
+      const sel = document.getElementById('guild-select');
+      sel.innerHTML = '';
+      INITIAL_BOOTSTRAP.guilds.forEach(g => {
+        const opt = document.createElement('option');
+        opt.value = String(g.id);
+        opt.textContent = g.name;
+        sel.appendChild(opt);
+      });
+      if (INITIAL_BOOTSTRAP.first_guild) {
+        renderGuildData(INITIAL_BOOTSTRAP.first_guild);
+        return;
+      }
+    }
+
     const info = await apiCall('/api/guilds');
     document.getElementById('bot-name-badge').textContent = info.bot_name;
     const sel = document.getElementById('guild-select');
     sel.innerHTML = '';
     info.guilds.forEach(g => {
       const opt = document.createElement('option');
-      opt.value = g.id;
+      opt.value = String(g.id);
       opt.textContent = g.name;
       sel.appendChild(opt);
     });
@@ -669,93 +833,13 @@ async function initDashboard() {
   }
 }
 
-async function loadGuildData() {
+async function loadGuildData(notify=false) {
   const gid = document.getElementById('guild-select').value;
   if (!gid) return;
   try {
     const data = await apiCall('/api/guild/' + gid);
-    currentGuild = data;
-    const s = data.settings;
-
-    document.getElementById('st-members').textContent = data.member_count;
-    document.getElementById('st-channels').textContent = data.text_channels.length;
-    document.getElementById('st-roles').textContent = data.roles.length;
-    document.getElementById('st-ping').textContent = data.ping_ms + ' мс';
-
-    // Общие
-    fillSelect('cfg-log-channel', data.text_channels, s.log_channel_id);
-    fillSelect('cfg-auto-role', data.roles, s.auto_role_id);
-
-    // Статус безопасности
-    const secBox = document.getElementById('security-status-box');
-    let secHtml = '';
-    if (data.security.slash_ok) {
-      secHtml += '<span class="badge badge-ok">✅ Команды /rank и /ранг открыты для участников</span> ';
-    } else {
-      secHtml += '<span class="badge badge-warn">⚠️ У @everyone выключено право команд приложений!</span> ';
-    }
-    if (data.security.webhooks_safe) {
-      secHtml += '<span class="badge badge-ok">✅ Защита от спам-вебхуков активна</span>';
-    } else {
-      secHtml += '<span class="badge badge-warn">🚨 У @everyone включены вебхуки!</span>';
-    }
-    secBox.innerHTML = secHtml;
-
-    // Уровни
-    document.getElementById('cfg-levels-enabled').value = String(s.levels_enabled !== false);
-    fillSelect('cfg-level-channel', data.text_channels, s.level_up_channel_id, '💬 В текущем канале сообщения');
-    document.getElementById('cfg-level-replace').value = String(s.level_roles_replace !== false);
-    fillSelect('new-lvl-role', data.roles, '', '— Выберите роль —', false);
-    fillSelect('xp-member-select', data.members, '', '— Выберите участника —', false);
-
-    // Таблица ролей за уровни
-    const lrBody = document.querySelector('#level-roles-table tbody');
-    lrBody.innerHTML = '';
-    data.level_roles_View.forEach(item => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td><b>${item.range_text}</b></td><td>${item.role_name}</td>
-        <td><button class="btn btn-danger" style="padding:5px 10px;font-size:0.8rem;" onclick="removeLevelRole('${item.level}')">Удалить</button></td>`;
-      lrBody.appendChild(tr);
-    });
-    if (data.level_roles_view.length === 0) {
-      lrBody.innerHTML = '<tr><td colspan="3" style="color:var(--text-muted);">Роли за уровни ещё не назначены</td></tr>';
-    }
-
-    // Таблица лидеров
-    const lbBody = document.querySelector('#leaderboard-table tbody');
-    lbBody.innerHTML = '';
-    data.leaderboard.forEach((u, idx) => {
-      const tr = document.createElement('tr');
-      tr.innerHTML = `<td>#${idx+1}</td><td><b>${u.name}</b></td><td>⭐ ${u.level}</td><td>${u.xp} XP</td><td>${u.messages}</td><td>${u.voice}</td>`;
-      lbBody.appendChild(tr);
-    });
-    if (data.leaderboard.length === 0) {
-      lbBody.innerHTML = '<tr><td colspan="6" style="color:var(--text-muted);">Пока нет данных об активности</td></tr>';
-    }
-
-    // Тикеты
-    fillSelect('cfg-ticket-cat', data.categories, s.ticket_category_id);
-    fillSelect('cfg-ticket-role', data.roles, s.support_role_id, '— Только администраторы —');
-    fillSelect('cfg-ticket-log', data.text_channels, s.ticket_log_channel_id, '— Использовать основной канал логов —');
-    document.getElementById('cfg-t-modal-title').value = s.ticket_modal_title || '';
-    document.getElementById('cfg-t-f1-label').value = s.ticket_field1_label || '';
-    document.getElementById('cfg-t-f1-ph').value = s.ticket_field1_placeholder || '';
-    document.getElementById('cfg-t-f2-label').value = s.ticket_field2_label || '';
-    document.getElementById('cfg-t-f2-ph').value = s.ticket_field2_placeholder || '';
-    document.getElementById('cfg-t-w-title').value = s.ticket_welcome_title || '';
-    document.getElementById('cfg-t-w-text').value = s.ticket_welcome_text || '';
-    fillSelect('send-ticket-channel', data.text_channels, '', '— Выберите канал —', false);
-
-    // Войсы
-    fillSelect('cfg-voice-hub', data.voice_channels, s.voice_hub_channel_id);
-    fillSelect('cfg-voice-cat', data.categories, s.voice_category_id);
-
-    // Розыгрыши и Чистка
-    fillSelect('cfg-gw-role', data.roles, s.giveaway_role_id, '— Только администраторы —');
-    fillSelect('gw-channel', data.text_channels, '', '— Выберите канал —', false);
-    fillSelect('gw-req-role', data.roles, '', '— Без обязательной роли —');
-    fillSelect('purge-channel', data.text_channels, '', '— Выберите канал —', false);
-
+    renderGuildData(data);
+    if (notify) showToast('🔄 Данные сервера обновлены!');
   } catch (e) {
     showToast('❌ ' + e.message, true);
   }
@@ -890,6 +974,7 @@ async function saveGiveawayConfig() {
     giveaway_role_id: document.getElementById('cfg-gw-role').value || null
   });
   showToast('✅ Роль ведущего розыгрышей сохранена!');
+  await loadGuildData();
 }
 
 async function startGiveaway() {
@@ -966,7 +1051,12 @@ class WebDashboard(commands.Cog):
             asyncio.create_task(self.runner.cleanup())
 
     def _check_auth(self, request: web.Request) -> bool:
-        token = request.query.get("token") or request.headers.get("X-Auth-Token") or ""
+        token = (
+            request.query.get("token")
+            or request.headers.get("X-Auth-Token")
+            or request.cookies.get("dash_token")
+            or ""
+        )
         return secrets.compare_digest(token.strip(), self.secret)
 
     async def start_web_server(self):
@@ -988,7 +1078,6 @@ class WebDashboard(commands.Cog):
             logger.error(f"Не удалось запустить веб-панель на порту {self.port}: {e}")
             return
 
-        # Запускаем бесплатный HTTPS-туннель Cloudflare, чтобы сайт открывался даже с закрытого Docker-хостинга
         if not self.public_url:
             asyncio.create_task(self.start_cloudflare_tunnel())
 
@@ -1041,45 +1130,26 @@ class WebDashboard(commands.Cog):
         base = self.public_url or f"http://127.0.0.1:{self.port}"
         return f"{base}/?token={self.secret}"
 
-    # ==========================================
-    # HTTP ОБРАБОТЧИКИ ВЕБ-ПАНЕЛИ
-    # ==========================================
+    def _build_guild_payload(self, guild: discord.Guild) -> dict:
+        """Собирает полную информацию о сервере с безопасной строковой сериализацией 19-значных ID."""
+        raw_settings = config_manager.get_guild(guild.id)
 
-    async def handle_index(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return web.Response(
-                text=(
-                    "<html><body style='background:#0b0f19;color:#fff;font-family:sans-serif;text-align:center;padding-top:15vh;'>"
-                    "<h2>🔒 Доступ защищён</h2>"
-                    "<p style='color:#94a3b8;'>Для входа в панель управления введите команду <b>/сайт</b> или <b>/dashboard</b> на вашем сервере Discord и перейдите по личной ссылке.</p>"
-                    "</body></html>"
-                ),
-                content_type="text/html",
-                status=403
-            )
-        # Исправляем опечатку регистра в JS при отдаче
-        html = DASHBOARD_HTML.replace("data.level_roles_View", "data.level_roles_view")
-        return web.Response(text=html, content_type="text/html")
-
-    async def handle_guilds(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return web.json_response({"error": "Доступ запрещен"}, status=403)
-        guilds = [{"id": str(g.id), "name": g.name} for g in self.bot.guilds]
-        return web.json_response({
-            "bot_name": str(self.bot.user),
-            "guilds": guilds
-        })
-
-    async def handle_guild_detail(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return web.json_response({"error": "Доступ запрещен"}, status=403)
-
-        gid = int(request.match_info["guild_id"])
-        guild = self.bot.get_guild(gid)
-        if not guild:
-            return web.json_response({"error": "Сервер не найден"}, status=404)
-
-        settings = config_manager.get_guild(guild.id)
+        # Важно: переводим все 64-битные Discord ID в строки, чтобы браузерный JS не округлял последние цифры!
+        id_keys = {
+            "log_channel_id", "auto_role_id", "level_up_channel_id",
+            "ticket_category_id", "support_role_id", "ticket_log_channel_id",
+            "voice_hub_channel_id", "voice_category_id", "giveaway_role_id"
+        }
+        safe_settings = {}
+        for k, v in raw_settings.items():
+            if k in id_keys:
+                safe_settings[k] = str(v) if v else None
+            elif k == "level_roles" and isinstance(v, dict):
+                safe_settings[k] = {str(lk): str(rv) for lk, rv in v.items()}
+            elif k == "giveaway_users" and isinstance(v, list):
+                safe_settings[k] = [str(u) for u in v]
+            else:
+                safe_settings[k] = v
 
         text_channels = [{"id": str(c.id), "name": f"#{c.name}"} for c in guild.text_channels]
         voice_channels = [{"id": str(c.id), "name": f"🔊 {c.name}"} for c in guild.voice_channels]
@@ -1092,11 +1162,10 @@ class WebDashboard(commands.Cog):
         members = [
             {"id": str(m.id), "name": f"{m.display_name} ({m.name})"}
             for m in guild.members if not m.bot
-        ][:200]
+        ][:250]
 
-        # Формируем представление ролей за уровни
-        level_roles = settings.get("level_roles", {})
-        replace_mode = settings.get("level_roles_replace", True)
+        level_roles = raw_settings.get("level_roles", {})
+        replace_mode = raw_settings.get("level_roles_replace", True)
         sorted_tiers = sorted(
             [(int(lvl), int(rid)) for lvl, rid in level_roles.items() if str(lvl).isdigit()],
             key=lambda x: x[0]
@@ -1115,7 +1184,6 @@ class WebDashboard(commands.Cog):
                 rng = f"Уровень {lvl}"
             level_roles_view.append({"level": str(lvl), "range_text": rng, "role_name": r_name})
 
-        # Таблица лидеров
         top_raw = levels_manager.get_leaderboard(guild.id, limit=20)
         leaderboard = []
         for uid, udata in top_raw:
@@ -1131,13 +1199,16 @@ class WebDashboard(commands.Cog):
                 "voice": f"{v_sec // 3600}ч {(v_sec % 3600) // 60}м"
             })
 
+        lat = self.bot.latency
+        ping_ms = round(lat * 1000) if (lat and not math.isnan(lat) and not math.isinf(lat)) else 0
         ev_perms = guild.default_role.permissions
-        return web.json_response({
+
+        return {
             "id": str(guild.id),
             "name": guild.name,
-            "member_count": guild.member_count,
-            "ping_ms": round(self.bot.latency * 1000),
-            "settings": settings,
+            "member_count": guild.member_count or len(guild.members),
+            "ping_ms": ping_ms,
+            "settings": safe_settings,
             "text_channels": text_channels,
             "voice_channels": voice_channels,
             "categories": categories,
@@ -1149,7 +1220,43 @@ class WebDashboard(commands.Cog):
                 "slash_ok": bool(ev_perms.use_application_commands),
                 "webhooks_safe": not bool(ev_perms.manage_webhooks)
             }
+        }
+
+    # ==========================================
+    # HTTP ОБРАБОТЧИКИ ВЕБ-ПАНЕЛИ
+    # ==========================================
+
+    async def handle_index(self, request: web.Request) -> web.Response:
+        # Предзагружаем все данные сервера прямо в HTML, чтобы интерфейс открывался мгновенно со всеми настройками!
+        guilds_list = [{"id": str(g.id), "name": g.name} for g in self.bot.guilds]
+        first_guild_data = self._build_guild_payload(self.bot.guilds[0]) if self.bot.guilds else None
+
+        bootstrap = {
+            "bot_name": str(self.bot.user) if self.bot.user else "Bot Online",
+            "guilds": guilds_list,
+            "first_guild": first_guild_data
+        }
+
+        html = DASHBOARD_HTML.replace("__INJECTED_SECRET__", self.secret)
+        html = html.replace("__INITIAL_BOOTSTRAP_JSON__", json.dumps(bootstrap, ensure_ascii=False))
+
+        resp = web.Response(text=html, content_type="text/html")
+        resp.set_cookie("dash_token", self.secret, max_age=86400 * 30, httponly=False)
+        return resp
+
+    async def handle_guilds(self, request: web.Request) -> web.Response:
+        guilds = [{"id": str(g.id), "name": g.name} for g in self.bot.guilds]
+        return web.json_response({
+            "bot_name": str(self.bot.user),
+            "guilds": guilds
         })
+
+    async def handle_guild_detail(self, request: web.Request) -> web.Response:
+        gid = int(request.match_info["guild_id"])
+        guild = self.bot.get_guild(gid)
+        if not guild:
+            return web.json_response({"error": "Сервер не найден"}, status=404)
+        return web.json_response(self._build_guild_payload(guild))
 
     async def handle_save_settings(self, request: web.Request) -> web.Response:
         if not self._check_auth(request):
@@ -1217,7 +1324,6 @@ class WebDashboard(commands.Cog):
             fixed = []
             if hasattr(self.bot, "ensure_member_command_permissions"):
                 fixed = await self.bot.ensure_member_command_permissions(guild)
-            # Дополнительно отключаем опасные права у @everyone
             if guild.me.guild_permissions.manage_roles:
                 try:
                     p = guild.default_role.permissions
