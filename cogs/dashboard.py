@@ -592,6 +592,15 @@ DASHBOARD_HTML = """<!DOCTYPE html>
         </div>
         <button class="btn btn-success" onclick="startGiveaway()">🎁 Запустить розыгрыш в Discord</button>
       </div>
+
+      <div class="card">
+        <h2>📋 Активные розыгрыши на сервере</h2>
+        <p class="desc">Список текущих розыгрышей. Вы можете досрочно подвести итоги или отменить любой розыгрыш прямо с сайта.</p>
+        <table class="table" id="active-giveaways-table">
+          <thead><tr><th>Приз</th><th>Канал</th><th>Участников</th><th>Победителей</th><th>Действия</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </div>
 
     <!-- ВКЛАДКА 6: ЧИСТКА ЧАТА -->
@@ -795,6 +804,23 @@ function renderGuildData(data) {
   fillSelect('gw-channel', data.text_channels, '', '— Выберите канал —', false);
   fillSelect('gw-req-role', data.roles, '', '— Без обязательной роли —');
   fillSelect('purge-channel', data.text_channels, '', '— Выберите канал —', false);
+
+  const gwBody = document.querySelector('#active-giveaways-table tbody');
+  if (gwBody) {
+    gwBody.innerHTML = '';
+    (data.active_giveaways || []).forEach(g => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><b>🎁 ${g.prize}</b></td><td>${g.channel_name}</td><td>👥 ${g.participants}</td><td>🏆 ${g.winners_count}</td>
+        <td style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button class="btn btn-success" style="padding:5px 10px;font-size:0.8rem;" onclick="manageGiveaway('${g.message_id}', 'end_giveaway')">🏁 Завершить</button>
+          <button class="btn btn-danger" style="padding:5px 10px;font-size:0.8rem;" onclick="manageGiveaway('${g.message_id}', 'cancel_giveaway')">⛔ Отменить</button>
+        </td>`;
+      gwBody.appendChild(tr);
+    });
+    if (!data.active_giveaways || data.active_giveaways.length === 0) {
+      gwBody.innerHTML = '<tr><td colspan="5" style="color:var(--text-muted);">Нет активных розыгрышей</td></tr>';
+    }
+  }
 }
 
 async function initDashboard() {
@@ -992,6 +1018,16 @@ async function startGiveaway() {
     });
     showToast(res.message);
     document.getElementById('gw-prize').value = '';
+    await loadGuildData();
+  } catch (e) { showToast('❌ ' + e.message, true); }
+}
+
+async function manageGiveaway(message_id, action) {
+  const gid = document.getElementById('guild-select').value;
+  try {
+    const res = await apiCall(`/api/guild/${gid}/action`, 'POST', { action, message_id });
+    showToast(res.message);
+    await loadGuildData();
   } catch (e) { showToast('❌ ' + e.message, true); }
 }
 
@@ -1203,6 +1239,17 @@ class WebDashboard(commands.Cog):
         ping_ms = round(lat * 1000) if (lat and not math.isnan(lat) and not math.isinf(lat)) else 0
         ev_perms = guild.default_role.permissions
 
+        active_gws = []
+        for g in giveaways_manager.get_guild_giveaways(guild.id, active_only=True):
+            ch_obj = guild.get_channel(int(g.get("channel_id", 0)))
+            active_gws.append({
+                "message_id": str(g.get("message_id", "")),
+                "prize": g.get("prize", "Приз"),
+                "channel_name": f"#{ch_obj.name}" if ch_obj else "Канал",
+                "participants": len(g.get("participants", [])),
+                "winners_count": g.get("winners_count", 1)
+            })
+
         return {
             "id": str(guild.id),
             "name": guild.name,
@@ -1216,6 +1263,7 @@ class WebDashboard(commands.Cog):
             "members": members,
             "level_roles_view": level_roles_view,
             "leaderboard": leaderboard,
+            "active_giveaways": active_gws,
             "security": {
                 "slash_ok": bool(ev_perms.use_application_commands),
                 "webhooks_safe": not bool(ev_perms.manage_webhooks)
@@ -1462,7 +1510,35 @@ class WebDashboard(commands.Cog):
                     pass
                 return web.json_response({"message": f"🎉 Розыгрыш «{prize}» запущен в #{ch.name}!"})
 
-            # 9. Очистка чата с сайта
+            # 9. Досрочное завершение или отмена розыгрыша с сайта
+            if action in ("end_giveaway", "cancel_giveaway"):
+                mid = int(body.get("message_id", 0))
+                giveaway = giveaways_manager.get_giveaway(mid)
+                if not giveaway or giveaway.get("ended"):
+                    return web.json_response({"error": "Розыгрыш не найден или уже завершён"}, status=400)
+
+                if action == "end_giveaway":
+                    gw_cog = self.bot.get_cog("Giveaways")
+                    if gw_cog:
+                        winners = await gw_cog.finish_giveaway(giveaway)
+                        return web.json_response({"message": f"🏁 Розыгрыш «{giveaway.get('prize')}» завершён! (Победителей: {len(winners)})"})
+                else:
+                    giveaway["ended"] = True
+                    giveaway["cancelled"] = True
+                    giveaway["winners"] = []
+                    giveaways_manager.save()
+                    ch = guild.get_channel(int(giveaway.get("channel_id", 0)))
+                    if isinstance(ch, discord.TextChannel):
+                        try:
+                            msg = await ch.fetch_message(mid)
+                            disabled_view = ui.View(timeout=None)
+                            disabled_view.add_item(ui.Button(label="Розыгрыш отменен", style=discord.ButtonStyle.danger, disabled=True, emoji="🚨"))
+                            await msg.edit(embed=build_giveaway_embed(giveaway, guild), view=disabled_view)
+                        except Exception:
+                            pass
+                    return web.json_response({"message": f"⛔ Розыгрыш «{giveaway.get('prize')}» отменён."})
+
+            # 10. Очистка чата с сайта
             if action == "purge_channel":
                 cid = int(body.get("channel_id", 0))
                 ch = guild.get_channel(cid)

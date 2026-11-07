@@ -143,6 +143,7 @@ class DiscordBot(commands.Bot):
                 fixed = await self.ensure_member_command_permissions(guild)
                 if fixed:
                     logger.info(f"🔧 На сервере '{guild.name}' восстановлен доступ к командам: {', '.join(fixed)}")
+                self.tree.clear_commands(guild=guild)
                 self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
                 logger.info(f"✅ Мгновенно синхронизировано {len(synced)} слэш-команд на сервере '{guild.name}' (ID: {guild.id})")
@@ -168,6 +169,7 @@ async def manual_sync(ctx: commands.Context):
     try:
         fixed = await bot.ensure_member_command_permissions(ctx.guild)
         # Копируем глобальные команды на текущий сервер для моментального появления в Discord
+        bot.tree.clear_commands(guild=ctx.guild)
         bot.tree.copy_global_to(guild=ctx.guild)
         synced_guild = await bot.tree.sync(guild=ctx.guild)
         # Также обновляем глобальные команды
