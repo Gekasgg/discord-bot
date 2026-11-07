@@ -128,23 +128,35 @@ class LevelsManager:
             self._data[gid] = {}
             self._is_dirty = True
 
-    def get_leaderboard(self, guild_id: int, limit: int = 10) -> list[tuple[int, dict]]:
+    def get_leaderboard(
+        self,
+        guild_id: int,
+        limit: int = 10,
+        excluded_user_ids: set[int] | None = None
+    ) -> list[tuple[int, dict]]:
         gid = str(guild_id)
         guild_data = self._data.get(gid, {})
-        # Сортировка по общему опыту (XP) по убыванию
+        excluded = excluded_user_ids or set()
+        # Сортировка по общему опыту (XP) по убыванию с фильтрацией скрытых ролей
         sorted_users = sorted(
-            [(int(uid), data) for uid, data in guild_data.items()],
+            [(int(uid), data) for uid, data in guild_data.items() if int(uid) not in excluded],
             key=lambda x: x[1].get("xp", 0),
             reverse=True
         )
         return sorted_users[:limit]
 
-    def get_user_rank(self, guild_id: int, user_id: int) -> tuple[int, int]:
+    def get_user_rank(
+        self,
+        guild_id: int,
+        user_id: int,
+        excluded_user_ids: set[int] | None = None
+    ) -> tuple[int, int]:
         """Возвращает (место в топе, общее количество участников в базе)."""
         gid = str(guild_id)
         guild_data = self._data.get(gid, {})
+        excluded = excluded_user_ids or set()
         sorted_users = sorted(
-            [(int(uid), data.get("xp", 0)) for uid, data in guild_data.items()],
+            [(int(uid), data.get("xp", 0)) for uid, data in guild_data.items() if int(uid) not in excluded],
             key=lambda x: x[1],
             reverse=True
         )
@@ -156,6 +168,26 @@ class LevelsManager:
 
 
 levels_manager = LevelsManager()
+
+
+def get_excluded_top_user_ids(guild: discord.Guild) -> set[int]:
+    """Возвращает множество ID участников сервера, имеющих роли, скрытые из топа."""
+    settings = settings_manager.get_guild_settings(guild.id)
+    raw_roles = settings.get("level_ignored_roles", []) or []
+    ignored_role_ids: set[int] = set()
+    for r in raw_roles:
+        try:
+            ignored_role_ids.add(int(r))
+        except (ValueError, TypeError):
+            continue
+    if not ignored_role_ids:
+        return set()
+
+    excluded: set[int] = set()
+    for member in guild.members:
+        if any(role.id in ignored_role_ids for role in member.roles):
+            excluded.add(member.id)
+    return excluded
 
 
 def make_progress_bar(current: int, total: int, length: int = 12) -> str:
@@ -456,7 +488,9 @@ class Leveling(commands.Cog):
         user_data = levels_manager.get_user_data(guild.id, target.id)
         total_xp = user_data.get("xp", 0)
         level, cur_xp, next_xp = calculate_level_from_xp(total_xp)
-        rank, total_ranked = levels_manager.get_user_rank(guild.id, target.id)
+        excluded_ids = get_excluded_top_user_ids(guild)
+        is_excluded = target.id in excluded_ids
+        rank, total_ranked = levels_manager.get_user_rank(guild.id, target.id, excluded_user_ids=excluded_ids)
 
         bar = make_progress_bar(cur_xp, next_xp, length=14)
         percent = int(round((cur_xp / next_xp) * 100)) if next_xp > 0 else 100
@@ -473,7 +507,8 @@ class Leveling(commands.Cog):
         )
         embed.set_thumbnail(url=target.display_avatar.url)
 
-        embed.add_field(name="🏆 Место в топе", value=f"**#{rank}** из {total_ranked}", inline=True)
+        rank_value = "Скрыт из /топ" if is_excluded else f"**#{rank}** из {total_ranked}"
+        embed.add_field(name="🏆 Место в топе", value=rank_value, inline=True)
         embed.add_field(name="⭐ Уровень", value=f"**{level}**", inline=True)
         embed.add_field(name="✨ Всего XP", value=f"**{total_xp:,}**", inline=True)
 
@@ -491,7 +526,8 @@ class Leveling(commands.Cog):
 
     def _build_leaderboard_embed(self, guild: discord.Guild) -> discord.Embed | None:
         """Формирует таблицу лидеров сервера."""
-        top_users = levels_manager.get_leaderboard(guild.id, limit=10)
+        excluded_ids = get_excluded_top_user_ids(guild)
+        top_users = levels_manager.get_leaderboard(guild.id, limit=10, excluded_user_ids=excluded_ids)
         if not top_users:
             return None
 

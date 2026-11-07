@@ -18,7 +18,7 @@ from discord.ext import commands
 
 from config import DATA_DIR, config_manager
 from cogs.tickets import TicketLauncherView
-from cogs.levels import levels_manager
+from cogs.levels import levels_manager, get_excluded_top_user_ids
 from cogs.giveaways import giveaways_manager, parse_duration, GiveawayJoinView, build_giveaway_embed
 
 logger = logging.getLogger("bot.dashboard")
@@ -422,6 +422,25 @@ DASHBOARD_HTML = """<!DOCTYPE html>
       </div>
 
       <div class="card">
+        <h2>🚫 Скрытие ролей из таблицы лидеров (/топ)</h2>
+        <p class="desc">Выберите роли (например: Администратор, Модератор, Спец-роль), обладатели которых не будут отображаться в таблице лидеров <b>/топ</b> и <b>/leaderboard</b>.</p>
+        <div class="grid-2" style="align-items:end;">
+          <div class="form-group">
+            <label>Роль для скрытия из топа:</label>
+            <select id="ignored-top-role-select"></select>
+          </div>
+          <div class="form-group">
+            <button class="btn" onclick="addIgnoredTopRole()">🚫 Скрыть участников с этой ролью из /топ</button>
+          </div>
+        </div>
+
+        <table class="table" id="ignored-top-roles-table" style="margin-top:14px;">
+          <thead><tr><th>Роль на сервере</th><th>Статус в /топ</th><th>Действие</th></tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+
+      <div class="card">
         <h2>🏆 Управление опытом участников (Топ-20)</h2>
         <p class="desc">Вы можете вручную добавить или списать опыт (XP) любому участнику сервера, и бот автоматически пересчитает его ранг и роли.</p>
         <div class="grid-2">
@@ -755,6 +774,7 @@ function renderGuildData(data) {
   fillSelect('cfg-level-channel', data.text_channels, s.level_up_channel_id, '💬 В текущем канале сообщения');
   document.getElementById('cfg-level-replace').value = String(s.level_roles_replace !== false);
   fillSelect('new-lvl-role', data.roles, '', '— Выберите роль —', false);
+  fillSelect('ignored-top-role-select', data.roles, '', '— Выберите роль для скрытия —', false);
   fillSelect('xp-member-select', data.members, '', '— Выберите участника —', false);
 
   // Таблица ролей за уровни
@@ -768,6 +788,21 @@ function renderGuildData(data) {
   });
   if (!data.level_roles_view || data.level_roles_view.length === 0) {
     lrBody.innerHTML = '<tr><td colspan="3" style="color:var(--text-muted);">Роли за уровни ещё не назначены</td></tr>';
+  }
+
+  // Таблица ролей, скрытых из /топ
+  const irBody = document.querySelector('#ignored-top-roles-table tbody');
+  if (irBody) {
+    irBody.innerHTML = '';
+    (data.ignored_top_roles_view || []).forEach(item => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td><b>${item.role_name}</b></td><td><span class="badge badge-warn">Скрыта из /топ</span></td>
+        <td><button class="btn btn-danger" style="padding:5px 10px;font-size:0.8rem;" onclick="removeIgnoredTopRole('${item.role_id}')">Вернуть в топ</button></td>`;
+      irBody.appendChild(tr);
+    });
+    if (!data.ignored_top_roles_view || data.ignored_top_roles_view.length === 0) {
+      irBody.innerHTML = '<tr><td colspan="3" style="color:var(--text-muted);">Нет скрытых ролей — в /топ отображаются все участники</td></tr>';
+    }
   }
 
   // Таблица лидеров
@@ -926,6 +961,26 @@ async function removeLevelRole(level) {
   const gid = document.getElementById('guild-select').value;
   try {
     const res = await apiCall(`/api/guild/${gid}/action`, 'POST', { action: 'remove_level_role', level });
+    showToast(res.message);
+    await loadGuildData();
+  } catch (e) { showToast('❌ ' + e.message, true); }
+}
+
+async function addIgnoredTopRole() {
+  const gid = document.getElementById('guild-select').value;
+  const role_id = document.getElementById('ignored-top-role-select').value;
+  if (!role_id) return showToast('⚠️ Выберите роль для скрытия', true);
+  try {
+    const res = await apiCall(`/api/guild/${gid}/action`, 'POST', { action: 'add_ignored_top_role', role_id });
+    showToast(res.message);
+    await loadGuildData();
+  } catch (e) { showToast('❌ ' + e.message, true); }
+}
+
+async function removeIgnoredTopRole(role_id) {
+  const gid = document.getElementById('guild-select').value;
+  try {
+    const res = await apiCall(`/api/guild/${gid}/action`, 'POST', { action: 'remove_ignored_top_role', role_id });
     showToast(res.message);
     await loadGuildData();
   } catch (e) { showToast('❌ ' + e.message, true); }
@@ -1182,7 +1237,7 @@ class WebDashboard(commands.Cog):
                 safe_settings[k] = str(v) if v else None
             elif k == "level_roles" and isinstance(v, dict):
                 safe_settings[k] = {str(lk): str(rv) for lk, rv in v.items()}
-            elif k == "giveaway_users" and isinstance(v, list):
+            elif k in ("giveaway_users", "level_ignored_roles") and isinstance(v, list):
                 safe_settings[k] = [str(u) for u in v]
             else:
                 safe_settings[k] = v
@@ -1220,7 +1275,19 @@ class WebDashboard(commands.Cog):
                 rng = f"Уровень {lvl}"
             level_roles_view.append({"level": str(lvl), "range_text": rng, "role_name": r_name})
 
-        top_raw = levels_manager.get_leaderboard(guild.id, limit=20)
+        ignored_roles_raw = raw_settings.get("level_ignored_roles", []) or []
+        ignored_top_roles_view = []
+        for rid_raw in ignored_roles_raw:
+            try:
+                rid_int = int(rid_raw)
+            except (ValueError, TypeError):
+                continue
+            r_obj = guild.get_role(rid_int)
+            r_name = f"@{r_obj.name}" if r_obj else f"Удалена (ID: {rid_int})"
+            ignored_top_roles_view.append({"role_id": str(rid_int), "role_name": r_name})
+
+        excluded_top_ids = get_excluded_top_user_ids(guild)
+        top_raw = levels_manager.get_leaderboard(guild.id, limit=20, excluded_user_ids=excluded_top_ids)
         leaderboard = []
         for uid, udata in top_raw:
             m = guild.get_member(uid)
@@ -1262,6 +1329,7 @@ class WebDashboard(commands.Cog):
             "roles": roles,
             "members": members,
             "level_roles_view": level_roles_view,
+            "ignored_top_roles_view": ignored_top_roles_view,
             "leaderboard": leaderboard,
             "active_giveaways": active_gws,
             "security": {
@@ -1409,6 +1477,27 @@ class WebDashboard(commands.Cog):
                     del lr[lvl]
                     config_manager.set_guild_value(guild.id, "level_roles", lr)
                 return web.json_response({"message": f"🗑️ Роль за {lvl} уровень удалена."})
+
+            # 4b. Скрытие роли из таблицы лидеров (/топ)
+            if action == "add_ignored_top_role":
+                rid = int(body.get("role_id", 0))
+                if not rid:
+                    return web.json_response({"error": "Выберите роль"}, status=400)
+                settings = config_manager.get_guild(guild.id)
+                ignored = [int(x) for x in (settings.get("level_ignored_roles", []) or []) if str(x).isdigit()]
+                if rid not in ignored:
+                    ignored.append(rid)
+                    config_manager.set_guild_value(guild.id, "level_ignored_roles", ignored)
+                r_obj = guild.get_role(rid)
+                r_label = f"@{r_obj.name}" if r_obj else str(rid)
+                return web.json_response({"message": f"🚫 Участники с ролью {r_label} теперь скрыты из /топ!"})
+
+            if action == "remove_ignored_top_role":
+                rid = int(body.get("role_id", 0))
+                settings = config_manager.get_guild(guild.id)
+                ignored = [int(x) for x in (settings.get("level_ignored_roles", []) or []) if str(x).isdigit() and int(x) != rid]
+                config_manager.set_guild_value(guild.id, "level_ignored_roles", ignored)
+                return web.json_response({"message": "✅ Роль возвращена в таблицу лидеров /топ!"})
 
             # 5. Управление опытом участника
             if action == "modify_xp":

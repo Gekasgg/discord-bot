@@ -45,6 +45,7 @@ DEFAULT_GUILD_SETTINGS = {
     "level_up_channel_id": None,  # None = текущий канал сообщения
     "level_roles": {},  # {"5": role_id, "10": role_id, ...}
     "level_roles_replace": True,  # True = заменять старую роль на новую (ранги), False = накапливать все
+    "level_ignored_roles": [],    # Список ID ролей, участники с которыми не отображаются в топе (/топ)
     # Настройки прав на управление розыгрышами (Giveaways)
     "giveaway_role_id": None,      # ID роли ведущего розыгрышей
     "giveaway_users": []           # Список ID конкретных пользователей с доступом к розыгрышам
