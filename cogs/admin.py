@@ -759,9 +759,12 @@ class AdminCommands(commands.Cog):
         )
         embed.add_field(name="🛠️ Тикеты и Голосовые каналы", value=systems_text, inline=False)
 
-        # 6. АУДИТ БЕЗОПАСНОСТИ СЕРВЕРА (@everyone)
+        # 6. АУДИТ БЕЗОПАСНОСТИ СЕРВЕРА (@everyone) И ДОСТУПА К КОМАНДАМ
         sec_warnings = []
         ev_perms = guild.default_role.permissions
+        if not ev_perms.use_application_commands:
+            issues_count += 1
+            sec_warnings.append("⚠️ **У роли @everyone отключено 'Использовать команды приложений'!** Обычные участники не смогут вызывать `/rank` через `/`. (Используйте `!sync` для авто-исправления)")
         if ev_perms.manage_webhooks:
             issues_count += 1
             sec_warnings.append("🚨 **У роли @everyone включено право 'Управлять вебхуками'!** (Любой новичок может создать спам-вебхук!)")
@@ -776,12 +779,12 @@ class AdminCommands(commands.Cog):
             sec_warnings.append("🚨 **КРИТИЧЕСКИ: У роли @everyone включены права Администратора!**")
 
         if sec_warnings:
-            sec_text = "\n".join(sec_warnings) + "\n\n💡 *Отключите эти права в Настройки сервера ➔ Роли ➔ @everyone ➔ Права.*"
-            embed.add_field(name="🛡️ Проверка безопасности (Внимание!)", value=sec_text, inline=False)
+            sec_text = "\n".join(sec_warnings) + "\n\n💡 *Настройте эти права в Настройки сервера ➔ Роли ➔ @everyone ➔ Права.*"
+            embed.add_field(name="🛡️ Проверка безопасности и доступа (Внимание!)", value=sec_text, inline=False)
         else:
             embed.add_field(
-                name="🛡️ Проверка безопасности",
-                value="✅ **Все ключевые уязвимости закрыты.** У роли @everyone нет доступа к вебхукам, внешним приложениям и пингам.",
+                name="🛡️ Проверка безопасности и доступа",
+                value="✅ **Все ключевые уязвимости закрыты, а слэш-команды (`/rank`, `/ранг`) открыты для всех участников.**",
                 inline=False
             )
 

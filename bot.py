@@ -69,15 +69,79 @@ class DiscordBot(commands.Bot):
         except Exception as e:
             logger.error(f"Ошибка синхронизации слэш-команд: {e}")
 
+    async def ensure_member_command_permissions(self, guild: discord.Guild) -> list[str]:
+        """
+        Автоматически проверяет и восстанавливает право 'Использовать команды приложений'
+        (use_application_commands) у @everyone, ролей участников и в текстовых каналах,
+        чтобы обычные игроки могли пользоваться /rank, /ранг, /leaderboard и другими командами.
+        """
+        fixed_items = []
+        if not guild.me:
+            return fixed_items
+
+        # 1. Проверяем роль @everyone
+        if guild.me.guild_permissions.manage_roles:
+            try:
+                if not guild.default_role.permissions.use_application_commands:
+                    perms = guild.default_role.permissions
+                    perms.update(use_application_commands=True)
+                    await guild.default_role.edit(
+                        permissions=perms,
+                        reason="Авто-восстановление доступа участников к слэш-командам (/rank)"
+                    )
+                    fixed_items.append("Роль @everyone")
+                    logger.info(f"🔧 Включено право 'Использовать команды приложений' для @everyone на сервере '{guild.name}'")
+            except Exception as e:
+                logger.warning(f"Не удалось обновить права @everyone на '{guild.name}': {e}")
+
+            # 2. Проверяем остальные не-админские роли, где могло быть выключено право
+            for role in guild.roles:
+                if role.is_default() or role.managed or role.permissions.administrator:
+                    continue
+                if guild.me.top_role > role and not role.permissions.use_application_commands:
+                    try:
+                        r_perms = role.permissions
+                        r_perms.update(use_application_commands=True)
+                        await role.edit(
+                            permissions=r_perms,
+                            reason="Авто-восстановление доступа к слэш-командам (/rank)"
+                        )
+                        fixed_items.append(f"Роль @{role.name}")
+                    except Exception:
+                        pass
+
+        # 3. Проверяем категории и текстовые каналы, где право могло быть запрещено (❌) в настройках канала
+        if guild.me.guild_permissions.manage_channels or guild.me.guild_permissions.administrator:
+            all_channels = list(guild.categories) + list(guild.text_channels)
+            for ch in all_channels:
+                try:
+                    for target, overwrite in ch.overwrites.items():
+                        if isinstance(target, discord.Role) and overwrite.use_application_commands is False:
+                            overwrite.use_application_commands = True
+                            await ch.set_permissions(
+                                target,
+                                overwrite=overwrite,
+                                reason="Разблокировка слэш-команд (/rank) для участников в канале"
+                            )
+                            fixed_items.append(f"Канал #{ch.name} (для @{target.name})")
+                            logger.info(f"🔧 Разблокированы слэш-команды в '{ch.name}' для роли '@{target.name}'")
+                except Exception as e:
+                    logger.debug(f"Не удалось проверить права канала {ch.name}: {e}")
+
+        return fixed_items
+
     async def on_ready(self):
         logger.info("=" * 50)
         logger.info(f"Бот успешно запущен как: {self.user} (ID: {self.user.id})")
         logger.info(f"Подключен к {len(self.guilds)} серверам.")
         logger.info("=" * 50)
 
-        # Мгновенная регистрация и синхронизация слэш-команд на серверах
+        # Мгновенная регистрация слэш-команд и проверка прав доступа для участников
         for guild in self.guilds:
             try:
+                fixed = await self.ensure_member_command_permissions(guild)
+                if fixed:
+                    logger.info(f"🔧 На сервере '{guild.name}' восстановлен доступ к командам: {', '.join(fixed)}")
                 self.tree.copy_global_to(guild=guild)
                 synced = await self.tree.sync(guild=guild)
                 logger.info(f"✅ Мгновенно синхронизировано {len(synced)} слэш-команд на сервере '{guild.name}' (ID: {guild.id})")
@@ -87,7 +151,7 @@ class DiscordBot(commands.Bot):
         # Установка статуса активности
         activity = discord.Activity(
             type=discord.ActivityType.watching,
-            name="за сервером | /help"
+            name="за сервером | /rank • /ранг"
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
 
@@ -98,19 +162,23 @@ bot = DiscordBot()
 @bot.command(name="sync")
 @commands.has_permissions(administrator=True)
 async def manual_sync(ctx: commands.Context):
-    """Мгновенная синхронизация команд на сервере через !sync"""
-    msg = await ctx.send("🔄 Мгновенно обновляю и регистрирую слэш-команды на сервере...")
+    """Мгновенная синхронизация команд и прав на сервере через !sync"""
+    msg = await ctx.send("🔄 Мгновенно обновляю слэш-команды и проверяю права доступа участников...")
     try:
+        fixed = await bot.ensure_member_command_permissions(ctx.guild)
         # Копируем глобальные команды на текущий сервер для моментального появления в Discord
         bot.tree.copy_global_to(guild=ctx.guild)
         synced_guild = await bot.tree.sync(guild=ctx.guild)
         # Также обновляем глобальные команды
-        synced_global = await bot.tree.sync()
+        await bot.tree.sync()
+
+        fixed_str = f"\n🔧 **Автоматически исправлены права доступа в:** {', '.join(fixed)}" if fixed else "\n✅ **Права ролей и каналов для использования команд в полном порядке!**"
 
         await msg.edit(content=(
-            f"✅ **Все слэш-команды успешно и мгновенно зарегистрированы!**\n\n"
-            f"📊 На сервере доступно: **{len(synced_guild)}** команд (включая `/clear` и `/server-config`).\n\n"
-            f"💡 *Если при вводе `/` они ещё не появились в списке из-за кэша Discord, нажмите `Ctrl + R` (или перезапустите Discord), чтобы обновить интерфейс.*"
+            f"✅ **Все слэш-команды успешно зарегистрированы и открыты для участников!**\n\n"
+            f"📊 На сервере доступно: **{len(synced_guild)}** команд (включая `/rank`, `/ранг`, `!ранг`, `/топ`)."
+            f"{fixed_str}\n\n"
+            f"💡 *Участники теперь могут использовать `/rank`, `/ранг` или просто написать `!ранг` / `!rank` в чат.*"
         ))
     except Exception as e:
         await msg.edit(content=f"❌ Ошибка синхронизации: {e}")

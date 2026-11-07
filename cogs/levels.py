@@ -230,17 +230,51 @@ class Leveling(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        """Обработка сообщений и начисление опыта."""
+        """Обработка сообщений, текстовых команд ранга и начисление опыта."""
         if message.author.bot or not message.guild:
             return
 
-        # Игнорируем сообщения короче 3 символов или начинающиеся с префикса команд
         content = message.content.strip()
-        if len(content) < 3 or content.startswith(self.bot.command_prefix):
+        if not content:
             return
 
         guild = message.guild
         member = message.author
+        lower_content = content.lower()
+        parts = lower_content.split()
+        cmd_word = parts[0] if parts else ""
+
+        # Поддержка вызова ранга через текстовый чат (!ранг, !rank, /ранг, /rank, !уровень, !лвл)
+        if cmd_word in ("!rank", "!ранг", "/rank", "/ранг", "!уровень", "!lvl", "!лвл"):
+            target = message.mentions[0] if message.mentions else member
+            embed = self._build_rank_embed(guild, target)
+            try:
+                await message.reply(embed=embed, mention_author=False)
+            except Exception:
+                try:
+                    await message.channel.send(embed=embed)
+                except Exception:
+                    pass
+            return
+
+        # Поддержка вызова таблицы лидеров через текстовый чат (!топ, !top, !лидеры, /топ, /leaderboard)
+        if cmd_word in ("!top", "!топ", "!leaderboard", "/leaderboard", "/топ", "!лидеры"):
+            embed = self._build_leaderboard_embed(guild)
+            try:
+                if embed:
+                    await message.reply(embed=embed, mention_author=False)
+                else:
+                    await message.reply(
+                        "📜 На сервере пока нет данных об активности. Пишите сообщения и общайтесь в войсе, чтобы попасть в топ!",
+                        mention_author=False
+                    )
+            except Exception:
+                pass
+            return
+
+        # Игнорируем сообщения короче 3 символов или начинающиеся с префикса команд
+        if len(content) < 3 or content.startswith(self.bot.command_prefix):
+            return
         settings = config_manager.get_guild(guild.id)
         if not settings.get("levels_enabled", True):
             return
@@ -417,18 +451,8 @@ class Leveling(commands.Cog):
     # ПОЛЬЗОВАТЕЛЬСКИЕ СЛЭШ-КОМАНДЫ
     # ==========================================
 
-    @app_commands.command(
-        name="rank",
-        description="Посмотреть свой текущий уровень, опыт и ранг активности на сервере"
-    )
-    @app_commands.describe(user="Пользователь, чей ранг вы хотите посмотреть (по умолчанию — ваш)")
-    async def cmd_rank(self, interaction: discord.Interaction, user: discord.Member | None = None):
-        target = user or interaction.user
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
-            return
-
+    def _build_rank_embed(self, guild: discord.Guild, target: discord.Member | discord.User) -> discord.Embed:
+        """Формирует красивую карточку ранга для слэш- и текстовых команд."""
         user_data = levels_manager.get_user_data(guild.id, target.id)
         total_xp = user_data.get("xp", 0)
         level, cur_xp, next_xp = calculate_level_from_xp(total_xp)
@@ -437,14 +461,14 @@ class Leveling(commands.Cog):
         bar = make_progress_bar(cur_xp, next_xp, length=14)
         percent = int(round((cur_xp / next_xp) * 100)) if next_xp > 0 else 100
 
-        # Время в голосовых каналах
         voice_secs = user_data.get("voice_seconds", 0)
         v_hours = voice_secs // 3600
         v_mins = (voice_secs % 3600) // 60
 
+        target_color = getattr(target, "color", discord.Color.default())
         embed = discord.Embed(
             title=f"📊 Ранг активности — {target.display_name}",
-            color=target.color if target.color != discord.Color.default() else discord.Color.blue(),
+            color=target_color if target_color != discord.Color.default() else discord.Color.blue(),
             timestamp=discord.utils.utcnow()
         )
         embed.set_thumbnail(url=target.display_avatar.url)
@@ -462,26 +486,14 @@ class Leveling(commands.Cog):
         embed.add_field(name="💬 Сообщений", value=f"{user_data.get('messages', 0):,}", inline=True)
         embed.add_field(name="🎙️ В войсе", value=f"{v_hours} ч {v_mins} мин", inline=True)
 
-        embed.set_footer(text=f"Сервер: {guild.name} | Пишите сообщения и общайтесь в войсе для роста!")
-        await interaction.response.send_message(embed=embed)
+        embed.set_footer(text=f"Сервер: {guild.name} | Команды: /rank, /ранг, !ранг")
+        return embed
 
-    @app_commands.command(
-        name="leaderboard",
-        description="Таблица лидеров сервера по уровням и активности"
-    )
-    async def cmd_leaderboard(self, interaction: discord.Interaction):
-        guild = interaction.guild
-        if not guild:
-            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
-            return
-
+    def _build_leaderboard_embed(self, guild: discord.Guild) -> discord.Embed | None:
+        """Формирует таблицу лидеров сервера."""
         top_users = levels_manager.get_leaderboard(guild.id, limit=10)
         if not top_users:
-            await interaction.response.send_message(
-                "📜 На сервере пока нет данных об активности. Пишите сообщения и общайтесь в войсе, чтобы попасть в топ!",
-                ephemeral=True
-            )
-            return
+            return None
 
         embed = discord.Embed(
             title=f"🏆 Доска лидеров активности — {guild.name}",
@@ -509,7 +521,75 @@ class Leveling(commands.Cog):
             )
 
         embed.description = "\n\n".join(lines)
-        embed.set_footer(text="Позиции обновляются в реальном времени • Используйте /rank")
+        embed.set_footer(text="Позиции обновляются в реальном времени • Используйте /rank или /ранг")
+        return embed
+
+    @app_commands.command(
+        name="rank",
+        description="Посмотреть свой текущий уровень, опыт и ранг активности на сервере"
+    )
+    @app_commands.describe(user="Пользователь, чей ранг вы хотите посмотреть (по умолчанию — ваш)")
+    async def cmd_rank(self, interaction: discord.Interaction, user: discord.Member | None = None):
+        target = user or interaction.user
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        embed = self._build_rank_embed(guild, target)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="ранг",
+        description="Посмотреть свой текущий уровень, опыт и ранг активности на сервере"
+    )
+    @app_commands.describe(user="Пользователь, чей ранг вы хотите посмотреть (по умолчанию — ваш)")
+    async def cmd_rank_ru(self, interaction: discord.Interaction, user: discord.Member | None = None):
+        target = user or interaction.user
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        embed = self._build_rank_embed(guild, target)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="leaderboard",
+        description="Таблица лидеров сервера по уровням и активности"
+    )
+    async def cmd_leaderboard(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        embed = self._build_leaderboard_embed(guild)
+        if not embed:
+            await interaction.response.send_message(
+                "📜 На сервере пока нет данных об активности. Пишите сообщения и общайтесь в войсе, чтобы попасть в топ!",
+                ephemeral=True
+            )
+            return
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="топ",
+        description="Таблица лидеров сервера по уровням и активности"
+    )
+    async def cmd_top_ru(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if not guild:
+            await interaction.response.send_message("❌ Команда доступна только на сервере.", ephemeral=True)
+            return
+
+        embed = self._build_leaderboard_embed(guild)
+        if not embed:
+            await interaction.response.send_message(
+                "📜 На сервере пока нет данных об активности. Пишите сообщения и общайтесь в войсе, чтобы попасть в топ!",
+                ephemeral=True
+            )
+            return
         await interaction.response.send_message(embed=embed)
 
     # ==========================================
