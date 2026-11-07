@@ -1259,226 +1259,239 @@ class WebDashboard(commands.Cog):
         return web.json_response(self._build_guild_payload(guild))
 
     async def handle_save_settings(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return web.json_response({"error": "Доступ запрещен"}, status=403)
+        try:
+            gid = int(request.match_info["guild_id"])
+            guild = self.bot.get_guild(gid)
+            if not guild:
+                return web.json_response({"error": "Сервер не найден"}, status=404)
 
-        gid = int(request.match_info["guild_id"])
-        guild = self.bot.get_guild(gid)
-        if not guild:
-            return web.json_response({"error": "Сервер не найден"}, status=404)
+            body = await request.json()
+            int_keys = {
+                "log_channel_id", "auto_role_id", "level_up_channel_id",
+                "ticket_category_id", "support_role_id", "ticket_log_channel_id",
+                "voice_hub_channel_id", "voice_category_id", "giveaway_role_id"
+            }
+            bool_keys = {"levels_enabled", "level_roles_replace"}
+            str_keys = {
+                "ticket_modal_title", "ticket_field1_label", "ticket_field1_placeholder",
+                "ticket_field2_label", "ticket_field2_placeholder",
+                "ticket_welcome_title", "ticket_welcome_text"
+            }
 
-        body = await request.json()
-        int_keys = {
-            "log_channel_id", "auto_role_id", "level_up_channel_id",
-            "ticket_category_id", "support_role_id", "ticket_log_channel_id",
-            "voice_hub_channel_id", "voice_category_id", "giveaway_role_id"
-        }
-        bool_keys = {"levels_enabled", "level_roles_replace"}
-        str_keys = {
-            "ticket_modal_title", "ticket_field1_label", "ticket_field1_placeholder",
-            "ticket_field2_label", "ticket_field2_placeholder",
-            "ticket_welcome_title", "ticket_welcome_text"
-        }
+            for k, val in body.items():
+                if k in int_keys:
+                    config_manager.set_guild_value(guild.id, k, int(val) if val else None)
+                elif k in bool_keys:
+                    config_manager.set_guild_value(guild.id, k, bool(val))
+                elif k in str_keys and isinstance(val, str):
+                    config_manager.set_guild_value(guild.id, k, val.strip())
 
-        for k, val in body.items():
-            if k in int_keys:
-                config_manager.set_guild_value(guild.id, k, int(val) if val else None)
-            elif k in bool_keys:
-                config_manager.set_guild_value(guild.id, k, bool(val))
-            elif k in str_keys and isinstance(val, str):
-                config_manager.set_guild_value(guild.id, k, val.strip())
-
-        return web.json_response({"ok": True})
+            return web.json_response({"ok": True})
+        except Exception as e:
+            logger.error(f"Ошибка сохранения настроек на сайте: {e}", exc_info=True)
+            return web.json_response({"error": f"Ошибка сохранения: {e}"}, status=400)
 
     async def handle_guild_action(self, request: web.Request) -> web.Response:
-        if not self._check_auth(request):
-            return web.json_response({"error": "Доступ запрещен"}, status=403)
+        try:
+            gid = int(request.match_info["guild_id"])
+            guild = self.bot.get_guild(gid)
+            if not guild:
+                return web.json_response({"error": "Сервер не найден"}, status=404)
 
-        gid = int(request.match_info["guild_id"])
-        guild = self.bot.get_guild(gid)
-        if not guild:
-            return web.json_response({"error": "Сервер не найден"}, status=404)
+            body = await request.json()
+            action = body.get("action")
 
-        body = await request.json()
-        action = body.get("action")
+            # 1. Тестовый лог
+            if action == "test_log":
+                cid = config_manager.get_guild(guild.id).get("log_channel_id")
+                if not cid:
+                    return web.json_response({"error": "Сначала выберите и сохраните канал логов!"}, status=400)
+                ch = guild.get_channel(int(cid))
+                if not isinstance(ch, discord.TextChannel):
+                    return web.json_response({"error": "Канал логов не найден на сервере"}, status=400)
+                embed = discord.Embed(
+                    title="Проверка системы логирования",
+                    description="✅ Тестовый лог успешно отправлен с Веб-Панели управления ботом!",
+                    color=discord.Color.green()
+                )
+                embed.set_footer(text=f"Сервер: {guild.name}")
+                await ch.send(embed=embed)
+                return web.json_response({"message": f"✅ Тестовый лог отправлен в #{ch.name}!"})
 
-        # 1. Тестовый лог
-        if action == "test_log":
-            cid = config_manager.get_guild(guild.id).get("log_channel_id")
-            if not cid:
-                return web.json_response({"error": "Сначала выберите и сохраните канал логов!"}, status=400)
-            ch = guild.get_channel(int(cid))
-            if not isinstance(ch, discord.TextChannel):
-                return web.json_response({"error": "Канал логов не найден на сервере"}, status=400)
-            embed = discord.Embed(
-                title="Проверка системы логирования",
-                description="✅ Тестовый лог успешно отправлен с Веб-Панели управления ботом!",
-                color=discord.Color.green()
-            )
-            embed.set_footer(text=f"Сервер: {guild.name}")
-            await ch.send(embed=embed)
-            return web.json_response({"message": f"✅ Тестовый лог отправлен в #{ch.name}!"})
+            # 2. Починка прав /rank и защита @everyone
+            if action == "fix_permissions":
+                fixed = []
+                if hasattr(self.bot, "ensure_member_command_permissions"):
+                    fixed = await self.bot.ensure_member_command_permissions(guild)
+                if guild.me.guild_permissions.manage_roles:
+                    try:
+                        p = guild.default_role.permissions
+                        p.update(
+                            use_application_commands=True,
+                            manage_webhooks=False,
+                            mention_everyone=False
+                        )
+                        if hasattr(p, "use_external_apps"):
+                            p.use_external_apps = False
+                        await guild.default_role.edit(permissions=p, reason="Защита сервера и включение /rank через Веб-Панель")
+                    except Exception:
+                        pass
+                return web.json_response({
+                    "message": f"✅ Права для /rank и /ранг открыты, защита @everyone включена! ({len(fixed)} объектов обновлено)"
+                })
 
-        # 2. Починка прав /rank и защита @everyone
-        if action == "fix_permissions":
-            fixed = []
-            if hasattr(self.bot, "ensure_member_command_permissions"):
-                fixed = await self.bot.ensure_member_command_permissions(guild)
-            if guild.me.guild_permissions.manage_roles:
+            # 3. Добавление роли за уровень
+            if action == "add_level_role":
+                lvl = int(body.get("level", 0))
+                rid = int(body.get("role_id", 0))
+                if lvl < 1 or not rid:
+                    return web.json_response({"error": "Некорректный уровень или роль"}, status=400)
+                settings = config_manager.get_guild(guild.id)
+                lr = settings.get("level_roles", {})
+                lr[str(lvl)] = rid
+                config_manager.set_guild_value(guild.id, "level_roles", lr)
+                return web.json_response({"message": f"✅ Назначена роль за {lvl} уровень!"})
+
+            # 4. Удаление роли за уровень
+            if action == "remove_level_role":
+                lvl = str(body.get("level", ""))
+                settings = config_manager.get_guild(guild.id)
+                lr = settings.get("level_roles", {})
+                if lvl in lr:
+                    del lr[lvl]
+                    config_manager.set_guild_value(guild.id, "level_roles", lr)
+                return web.json_response({"message": f"🗑️ Роль за {lvl} уровень удалена."})
+
+            # 5. Управление опытом участника
+            if action == "modify_xp":
+                op = body.get("op")
+                uid = int(body.get("user_id", 0))
+                amount = int(body.get("amount", 0))
+                member = guild.get_member(uid)
+                lvl_cog = self.bot.get_cog("Leveling")
+
+                if op == "add":
+                    _, new_lvl, _ = levels_manager.add_xp(guild.id, uid, amount)
+                    if member and lvl_cog:
+                        await lvl_cog.update_member_level_roles(guild, member, new_lvl)
+                    levels_manager.save()
+                    return web.json_response({"message": f"✅ Начислено +{amount} XP (Уровень: {new_lvl})"})
+                elif op == "remove":
+                    udata = levels_manager.get_user_data(guild.id, uid)
+                    new_xp = max(0, udata.get("xp", 0) - amount)
+                    _, new_lvl = levels_manager.set_xp(guild.id, uid, new_xp)
+                    if member and lvl_cog:
+                        await lvl_cog.update_member_level_roles(guild, member, new_lvl)
+                    levels_manager.save()
+                    return web.json_response({"message": f"✅ Списано -{amount} XP (Уровень: {new_lvl})"})
+                elif op == "reset":
+                    levels_manager.reset_user(guild.id, uid)
+                    if member and lvl_cog:
+                        await lvl_cog.update_member_level_roles(guild, member, 0)
+                    levels_manager.save()
+                    return web.json_response({"message": "🗑️ Опыт и уровень участника сброшены!"})
+
+            # 6. Публикация панели тикетов
+            if action == "send_ticket_panel":
+                cid = int(body.get("channel_id", 0))
+                ch = guild.get_channel(cid)
+                if not isinstance(ch, discord.TextChannel):
+                    return web.json_response({"error": "Канал не найден"}, status=400)
+                embed = discord.Embed(
+                    title=body.get("title") or "🎫 Поддержка и обратная связь",
+                    description=body.get("description") or "Нажмите на кнопку ниже, чтобы создать обращение.",
+                    color=discord.Color.blue()
+                )
+                btn_label = body.get("button_text") or "Создать тикет"
+                await ch.send(embed=embed, view=TicketLauncherView(button_label=btn_label))
+                return web.json_response({"message": f"✅ Панель тикетов отправлена в #{ch.name}!"})
+
+            # 7. Авто-создание голосового хаба
+            if action == "create_voice_hub":
+                cat = await guild.create_category("🔊 Голосовые комнаты")
+                hub = await guild.create_voice_channel("➕ Создать канал", category=cat)
+                config_manager.set_guild_value(guild.id, "voice_category_id", cat.id)
+                config_manager.set_guild_value(guild.id, "voice_hub_channel_id", hub.id)
+                return web.json_response({"message": "✅ Категория и канал «➕ Создать канал» успешно созданы!"})
+
+            # 8. Запуск розыгрыша с сайта
+            if action == "start_giveaway":
+                cid = int(body.get("channel_id", 0))
+                ch = guild.get_channel(cid)
+                if not isinstance(ch, discord.TextChannel):
+                    return web.json_response({"error": "Выберите текстовый канал"}, status=400)
+                prize = (body.get("prize") or "").strip()
+                if not prize:
+                    return web.json_response({"error": "Укажите название приза"}, status=400)
+                seconds = parse_duration(body.get("duration") or "1h")
+                if not seconds or seconds < 10:
+                    return web.json_response({"error": "Некорректная длительность (пример: 30м, 2ч, 1д)"}, status=400)
+
+                winners_count = max(1, min(50, int(body.get("winners") or 1)))
+                req_role_id = int(body["req_role_id"]) if body.get("req_role_id") else None
+                req_level = max(0, int(body.get("req_level") or 0))
+                dm_text = (body.get("dm_text") or "").strip() or None
+
+                now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
+                end_time = now_ts + seconds
+                gdata = {
+                    "guild_id": guild.id,
+                    "channel_id": ch.id,
+                    "message_id": 0,
+                    "prize": prize,
+                    "description": None,
+                    "dm_message": dm_text,
+                    "host_id": guild.owner_id or self.bot.user.id,
+                    "winners_count": winners_count,
+                    "created_at": now_ts,
+                    "end_timestamp": end_time,
+                    "required_role_id": req_role_id,
+                    "min_level": req_level,
+                    "participants": [],
+                    "ended": False,
+                    "cancelled": False,
+                    "winners": []
+                }
+                embed = build_giveaway_embed(gdata, guild)
+                msg = await ch.send(embed=embed, view=GiveawayJoinView())
+                gdata["message_id"] = msg.id
+                giveaways_manager.add_giveaway(msg.id, gdata)
                 try:
-                    p = guild.default_role.permissions
-                    p.update(
-                        use_application_commands=True,
-                        manage_webhooks=False,
-                        mention_everyone=False
-                    )
-                    if hasattr(p, "use_external_apps"):
-                        p.use_external_apps = False
-                    await guild.default_role.edit(permissions=p, reason="Защита сервера и включение /rank через Веб-Панель")
+                    await msg.edit(embed=build_giveaway_embed(gdata, guild))
                 except Exception:
                     pass
-            return web.json_response({
-                "message": f"✅ Права для /rank и /ранг открыты, защита @everyone включена! ({len(fixed)} объектов обновлено)"
-            })
+                return web.json_response({"message": f"🎉 Розыгрыш «{prize}» запущен в #{ch.name}!"})
 
-        # 3. Добавление роли за уровень
-        if action == "add_level_role":
-            lvl = int(body.get("level", 0))
-            rid = int(body.get("role_id", 0))
-            if lvl < 1 or not rid:
-                return web.json_response({"error": "Некорректный уровень или роль"}, status=400)
-            settings = config_manager.get_guild(guild.id)
-            lr = settings.get("level_roles", {})
-            lr[str(lvl)] = rid
-            config_manager.set_guild_value(guild.id, "level_roles", lr)
-            return web.json_response({"message": f"✅ Назначена роль за {lvl} уровень!"})
+            # 9. Очистка чата с сайта
+            if action == "purge_channel":
+                cid = int(body.get("channel_id", 0))
+                ch = guild.get_channel(cid)
+                if not isinstance(ch, discord.TextChannel):
+                    return web.json_response({"error": "Канал не найден"}, status=400)
+                perms = ch.permissions_for(guild.me)
+                if not perms.manage_messages or not perms.read_message_history:
+                    return web.json_response(
+                        {"error": f"У бота нет права 'Управлять сообщениями' в канале #{ch.name}!"},
+                        status=400
+                    )
+                amount = max(1, min(100, int(body.get("amount") or 10)))
+                only_bots = bool(body.get("only_bots"))
+                if only_bots:
+                    deleted = await ch.purge(
+                        limit=amount,
+                        check=lambda m: (m.author.bot or m.webhook_id is not None),
+                        bulk=True
+                    )
+                else:
+                    deleted = await ch.purge(limit=amount, bulk=True)
+                return web.json_response({"message": f"🧹 В канале #{ch.name} удалено {len(deleted)} сообщений!"})
 
-        # 4. Удаление роли за уровень
-        if action == "remove_level_role":
-            lvl = str(body.get("level", ""))
-            settings = config_manager.get_guild(guild.id)
-            lr = settings.get("level_roles", {})
-            if lvl in lr:
-                del lr[lvl]
-                config_manager.set_guild_value(guild.id, "level_roles", lr)
-            return web.json_response({"message": f"🗑️ Роль за {lvl} уровень удалена."})
-
-        # 5. Управление опытом участника
-        if action == "modify_xp":
-            op = body.get("op")
-            uid = int(body.get("user_id", 0))
-            amount = int(body.get("amount", 0))
-            member = guild.get_member(uid)
-            lvl_cog = self.bot.get_cog("Leveling")
-
-            if op == "add":
-                _, new_lvl, _ = levels_manager.add_xp(guild.id, uid, amount)
-                if member and lvl_cog:
-                    await lvl_cog.update_member_level_roles(guild, member, new_lvl)
-                levels_manager.save()
-                return web.json_response({"message": f"✅ Начислено +{amount} XP (Уровень: {new_lvl})"})
-            elif op == "remove":
-                udata = levels_manager.get_user_data(guild.id, uid)
-                new_xp = max(0, udata.get("xp", 0) - amount)
-                _, new_lvl = levels_manager.set_xp(guild.id, uid, new_xp)
-                if member and lvl_cog:
-                    await lvl_cog.update_member_level_roles(guild, member, new_lvl)
-                levels_manager.save()
-                return web.json_response({"message": f"✅ Списано -{amount} XP (Уровень: {new_lvl})"})
-            elif op == "reset":
-                levels_manager.reset_user(guild.id, uid)
-                if member and lvl_cog:
-                    await lvl_cog.update_member_level_roles(guild, member, 0)
-                levels_manager.save()
-                return web.json_response({"message": "🗑️ Опыт и уровень участника сброшены!"})
-
-        # 6. Публикация панели тикетов
-        if action == "send_ticket_panel":
-            cid = int(body.get("channel_id", 0))
-            ch = guild.get_channel(cid)
-            if not isinstance(ch, discord.TextChannel):
-                return web.json_response({"error": "Канал не найден"}, status=400)
-            embed = discord.Embed(
-                title=body.get("title") or "🎫 Поддержка и обратная связь",
-                description=body.get("description") or "Нажмите на кнопку ниже, чтобы создать обращение.",
-                color=discord.Color.blue()
-            )
-            btn_label = body.get("button_text") or "Создать тикет"
-            await ch.send(embed=embed, view=TicketLauncherView(button_label=btn_label))
-            return web.json_response({"message": f"✅ Панель тикетов отправлена в #{ch.name}!"})
-
-        # 7. Авто-создание голосового хаба
-        if action == "create_voice_hub":
-            cat = await guild.create_category("🔊 Голосовые комнаты")
-            hub = await guild.create_voice_channel("➕ Создать канал", category=cat)
-            config_manager.set_guild_value(guild.id, "voice_category_id", cat.id)
-            config_manager.set_guild_value(guild.id, "voice_hub_channel_id", hub.id)
-            return web.json_response({"message": "✅ Категория и канал «➕ Создать канал» успешно созданы!"})
-
-        # 8. Запуск розыгрыша с сайта
-        if action == "start_giveaway":
-            cid = int(body.get("channel_id", 0))
-            ch = guild.get_channel(cid)
-            if not isinstance(ch, discord.TextChannel):
-                return web.json_response({"error": "Выберите текстовый канал"}, status=400)
-            prize = (body.get("prize") or "").strip()
-            if not prize:
-                return web.json_response({"error": "Укажите название приза"}, status=400)
-            seconds = parse_duration(body.get("duration") or "1h")
-            if not seconds or seconds < 10:
-                return web.json_response({"error": "Некорректная длительность (пример: 30м, 2ч, 1д)"}, status=400)
-
-            winners_count = max(1, min(50, int(body.get("winners") or 1)))
-            req_role_id = int(body["req_role_id"]) if body.get("req_role_id") else None
-            req_level = max(0, int(body.get("req_level") or 0))
-            dm_text = (body.get("dm_text") or "").strip() or None
-
-            now_ts = datetime.datetime.now(datetime.timezone.utc).timestamp()
-            end_time = now_ts + seconds
-            gdata = {
-                "guild_id": guild.id,
-                "channel_id": ch.id,
-                "message_id": 0,
-                "prize": prize,
-                "description": None,
-                "dm_message": dm_text,
-                "host_id": guild.owner_id or self.bot.user.id,
-                "winners_count": winners_count,
-                "created_at": now_ts,
-                "end_timestamp": end_time,
-                "required_role_id": req_role_id,
-                "min_level": req_level,
-                "participants": [],
-                "ended": False,
-                "cancelled": False,
-                "winners": []
-            }
-            embed = build_giveaway_embed(gdata, guild)
-            msg = await ch.send(embed=embed, view=GiveawayJoinView())
-            gdata["message_id"] = msg.id
-            giveaways_manager.add_giveaway(msg.id, gdata)
-            try:
-                await msg.edit(embed=build_giveaway_embed(gdata, guild))
-            except Exception:
-                pass
-            return web.json_response({"message": f"🎉 Розыгрыш «{prize}» запущен в #{ch.name}!"})
-
-        # 9. Очистка чата с сайта
-        if action == "purge_channel":
-            cid = int(body.get("channel_id", 0))
-            ch = guild.get_channel(cid)
-            if not isinstance(ch, discord.TextChannel):
-                return web.json_response({"error": "Канал не найден"}, status=400)
-            amount = max(1, min(100, int(body.get("amount") or 10)))
-            only_bots = bool(body.get("only_bots"))
-            deleted = await ch.purge(
-                limit=amount,
-                check=(lambda m: m.author.bot or m.webhook_id is not None) if only_bots else None,
-                bulk=True
-            )
-            return web.json_response({"message": f"🧹 В канале #{ch.name} удалено {len(deleted)} сообщений!"})
-
-        return web.json_response({"error": "Неизвестное действие"}, status=400)
+            return web.json_response({"error": "Неизвестное действие"}, status=400)
+        except discord.Forbidden as e:
+            return web.json_response({"error": f"Недостаточно прав у бота в Discord: {e}"}, status=400)
+        except Exception as e:
+            logger.error(f"Ошибка при выполнении действия на сайте ({body if 'body' in locals() else ''}): {e}", exc_info=True)
+            return web.json_response({"error": f"Ошибка выполнения: {e}"}, status=400)
 
     # ==========================================
     # КОМАНДЫ В DISCORD ДЛЯ ПОЛУЧЕНИЯ ССЫЛКИ НА САЙТ
