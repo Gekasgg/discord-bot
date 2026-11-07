@@ -52,7 +52,8 @@ class DiscordBot(commands.Bot):
             "cogs.voice",
             "cogs.admin",
             "cogs.levels",
-            "cogs.giveaways"
+            "cogs.giveaways",
+            "cogs.dashboard"
         ]
 
         for ext in extensions:
@@ -176,12 +177,32 @@ async def manual_sync(ctx: commands.Context):
 
         await msg.edit(content=(
             f"✅ **Все слэш-команды успешно зарегистрированы и открыты для участников!**\n\n"
-            f"📊 На сервере доступно: **{len(synced_guild)}** команд (включая `/rank`, `/ранг`, `!ранг`, `/топ`)."
+            f"📊 На сервере доступно: **{len(synced_guild)}** команд (включая `/сайт`, `/dashboard`, `/rank`, `/ранг`)."
             f"{fixed_str}\n\n"
-            f"💡 *Участники теперь могут использовать `/rank`, `/ранг` или просто написать `!ранг` / `!rank` в чат.*"
+            f"💡 *Для открытия веб-панели настроек введите `/сайт` (или `!сайт`).*"
         ))
     except Exception as e:
         await msg.edit(content=f"❌ Ошибка синхронизации: {e}")
+
+
+@bot.command(name="сайт", aliases=["dashboard", "панель"])
+@commands.has_permissions(administrator=True)
+async def cmd_site_prefix(ctx: commands.Context):
+    """Отправляет администратору персональную ссылку на веб-панель в ЛС."""
+    dash_cog = bot.get_cog("WebDashboard")
+    if not dash_cog:
+        await ctx.send("❌ Модуль веб-панели ещё загружается.")
+        return
+
+    url = dash_cog.get_dashboard_url()
+    try:
+        await ctx.author.send(
+            f"🌐 **Ваша персональная ссылка для входа в Веб-Панель управления ботом:**\n{url}\n\n"
+            f"*(Не передавайте эту ссылку посторонним)*"
+        )
+        await ctx.reply("✅ Ссылка на сайт управления ботом отправлена вам в **Личные сообщения**! (Также вы можете использовать слэш-команду `/сайт` или `/dashboard`).", mention_author=False)
+    except discord.Forbidden:
+        await ctx.reply("⚠️ У вас закрыты личные сообщения. Пожалуйста, введите слэш-команду **`/сайт`** или **`/dashboard`** — бот покажет ссылку скрытым сообщением прямо здесь!", mention_author=False)
 
 
 async def main():
