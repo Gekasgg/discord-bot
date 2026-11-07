@@ -1345,7 +1345,12 @@ class WebDashboard(commands.Cog):
     async def handle_index(self, request: web.Request) -> web.Response:
         # Предзагружаем все данные сервера прямо в HTML, чтобы интерфейс открывался мгновенно со всеми настройками!
         guilds_list = [{"id": str(g.id), "name": g.name} for g in self.bot.guilds]
-        first_guild_data = self._build_guild_payload(self.bot.guilds[0]) if self.bot.guilds else None
+        first_guild_data = None
+        if self.bot.guilds:
+            try:
+                first_guild_data = self._build_guild_payload(self.bot.guilds[0])
+            except Exception as e:
+                logger.error(f"Ошибка сборки данных сервера при открытии сайта: {e}", exc_info=True)
 
         bootstrap = {
             "bot_name": str(self.bot.user) if self.bot.user else "Bot Online",
@@ -1368,11 +1373,15 @@ class WebDashboard(commands.Cog):
         })
 
     async def handle_guild_detail(self, request: web.Request) -> web.Response:
-        gid = int(request.match_info["guild_id"])
-        guild = self.bot.get_guild(gid)
-        if not guild:
-            return web.json_response({"error": "Сервер не найден"}, status=404)
-        return web.json_response(self._build_guild_payload(guild))
+        try:
+            gid = int(request.match_info["guild_id"])
+            guild = self.bot.get_guild(gid)
+            if not guild:
+                return web.json_response({"error": "Сервер не найден"}, status=404)
+            return web.json_response(self._build_guild_payload(guild))
+        except Exception as e:
+            logger.error(f"Ошибка загрузки данных сервера: {e}", exc_info=True)
+            return web.json_response({"error": f"Ошибка загрузки данных: {e}"}, status=400)
 
     async def handle_save_settings(self, request: web.Request) -> web.Response:
         try:

@@ -172,7 +172,7 @@ levels_manager = LevelsManager()
 
 def get_excluded_top_user_ids(guild: discord.Guild) -> set[int]:
     """Возвращает множество ID участников сервера, имеющих роли, скрытые из топа."""
-    settings = settings_manager.get_guild_settings(guild.id)
+    settings = config_manager.get_guild(guild.id)
     raw_roles = settings.get("level_ignored_roles", []) or []
     ignored_role_ids: set[int] = set()
     for r in raw_roles:
